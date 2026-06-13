@@ -322,6 +322,19 @@ impl CookieManager {
 
     /// 验证 Cookie 是否有效（通过 /x/space/myinfo 获取用户信息）
     pub async fn verify_cookie(&self) -> CookieVerifyResult {
+        // 对标 Python: 先检查关键字段是否存在，避免无效 API 调用
+        let sessdata = self.cookies.get("SESSDATA");
+        let bili_jct = self.cookies.get("bili_jct");
+        if sessdata.is_none() || bili_jct.is_none() {
+            let missing = if sessdata.is_none() { "SESSDATA" } else { "bili_jct" };
+            return CookieVerifyResult {
+                valid: false,
+                message: format!("关键Cookie缺失: {}", missing),
+                uid: None,
+                uname: None,
+            };
+        }
+
         let resp = match self
             .client
             .get(VERIFY_URL)

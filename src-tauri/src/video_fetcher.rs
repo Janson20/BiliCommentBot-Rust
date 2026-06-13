@@ -119,6 +119,23 @@ pub async fn get_video_list(
                 code,
                 err_msg
             );
+            // 对标 Python: 若因频率限制中断且已有部分数据，保留已获取的视频
+            let is_rate_limited =
+                crate::rate_limiter::is_bili_rate_limited_text(
+                    &text,
+                    reqwest::StatusCode::OK,
+                );
+            if is_rate_limited {
+                if !all_videos.is_empty() {
+                    log::warn!(
+                        "视频列表获取被频率限制，保留已取得的 {} 个视频",
+                        all_videos.len()
+                    );
+                    save_cache(cache_file, &all_videos);
+                } else {
+                    log::warn!("视频列表被频率限制且无已获取数据，将使用过期缓存");
+                }
+            }
         }
         break;
     }

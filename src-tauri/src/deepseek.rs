@@ -101,6 +101,7 @@ pub async fn generate_reply(
         .post(format!("{}/chat/completions", api_config.base_url))
         .header("Authorization", format!("Bearer {}", api_config.api_key))
         .header("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(30))
         .json(&request_body)
         .send()
         .await

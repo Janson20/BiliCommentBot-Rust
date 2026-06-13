@@ -37,7 +37,7 @@ pub async fn get_video_comments(
 
     let mut all_comments: Vec<Comment> = Vec::new();
     let mut pn = 1u32;
-    let page_size = 20;
+    let mut page_size = 20u32;
 
     while pn <= max_pages {
         let params = [
@@ -62,7 +62,11 @@ pub async fn get_video_comments(
         let code = json["code"].as_i64().unwrap_or(-1);
         if code != 0 {
             let err = json["message"].as_str().unwrap_or("");
-            if err.contains("ps out of bounds") && pn == 1 {
+            // 对标 Python: 某些旧视频 page_size=20 会报错 "ps out of bounds"
+            // 将 page_size 降级为 10 并重试当前页
+            if err.contains("ps out of bounds") && pn == 1 && page_size > 10 {
+                page_size = 10;
+                log::warn!("page_size 20 超出范围，降级为 10 重试");
                 continue;
             }
             break;

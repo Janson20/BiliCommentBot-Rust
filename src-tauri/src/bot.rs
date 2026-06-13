@@ -235,15 +235,27 @@ async fn process_comments(
 ) {
     let csrf = {
         let cm = state.cookie_manager.lock().await;
-        cm.csrf_token.clone()
+        // 每次使用前从 live cookies 中实时提取 CSRF token
+        // 对标 Python 版: self.cookie_manager._get_csrf_from_cookie()
+        cm.get_csrf_from_cookie()
     };
     let csrf = match csrf {
         Some(c) => c,
         None => {
-            state.send_log("ERROR", "CSRF Token 缺失，跳过评论处理");
+            state.send_log("ERROR", "CSRF Token (bili_jct) 缺失，跳过评论处理。请确认 Cookie 包含 bili_jct 字段。");
             return;
         }
     };
+
+    // 对标 Python: 回复前复验 Cookie 有效性，避免使用已过期 Cookie 发起回复
+    {
+        let cm = state.cookie_manager.lock().await;
+        let verify = cm.verify_cookie().await;
+        if !verify.valid {
+            state.send_log("ERROR", &format!("Cookie 无效，跳过评论处理: {}", verify.message));
+            return;
+        }
+    }
 
     let mut processed_count = 0u32;
     let max_process = config.reply.max_process;
