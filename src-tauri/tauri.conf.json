@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "BiliCommentBot-RS",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "tauri": {
     "allowlist": {
@@ -23,7 +23,9 @@
       },
       "fs": {
         "all": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       },
       "path": {
         "all": true
@@ -57,7 +59,9 @@
       "protocol": {
         "all": true,
         "asset": true,
-        "assetScope": ["**"]
+        "assetScope": [
+          "**"
+        ]
       }
     },
     "bundle": {
