@@ -536,52 +536,18 @@ pub async fn clear_all_data(
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
     }
 
-    // 2. 关闭数据库连接（WAL checkpoint 刷盘后断开）
+    // 2. 关闭数据库连接（WAL checkpoint 刷盘 + 释放文件句柄）
     {
-        let history = bot_state.history.lock().await;
-        history.checkpoint();
+        let mut history = bot_state.history.lock().await;
+        history.close();
     }
 
-    // 3. 收集所有运行时数据文件
+    // 3. 收集工作目录下除 .exe 外的所有文件/目录
     let cwd = std::env::current_dir().map_err(|e| format!("获取工作目录失败: {}", e))?;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    // 已知固定数据文件
-    let known_names = [
-        "config.toml",
-        "history.db",
-        "history.db-wal",
-        "history.db-shm",
-        "history.json",
-        "history.json.bak",
-        "bilibili_cookie.json",
-        "video_cache.json",
-    ];
-
-    for name in &known_names {
-        let path = cwd.join(name);
-        if path.exists() {
-            files.push(path);
-        }
-    }
-
-    // 根目录 *.log 文件
-    if let Ok(entries) = std::fs::read_dir(&cwd) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.ends_with(".log") && entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                files.push(entry.path());
-            }
-        }
-    }
-
-    // logs/ 目录（整体移至回收站）
-    let logs_dir = cwd.join("logs");
-    if logs_dir.is_dir() {
-        files.push(logs_dir);
-    }
+    let _ = collect_all_except_exe(&cwd, &cwd, &mut files);
 
     if files.is_empty() {
         return Ok(serde_json::json!({
@@ -628,4 +594,28 @@ pub async fn clear_all_data(
     });
 
     Ok(result)
+}
+
+/// 递归收集工作目录下所有非 .exe 文件与目录（子目录先于父目录，确保有序删除）
+fn collect_all_except_exe(
+    _cwd: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+
+        if ft.is_dir() {
+            collect_all_except_exe(_cwd, &path, out)?;
+            out.push(path);
+        } else if ft.is_file() {
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if !ext.eq_ignore_ascii_case("exe") {
+                out.push(path);
+            }
+        }
+    }
+    Ok(())
 }

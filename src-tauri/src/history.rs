@@ -15,17 +15,24 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub comment_id: String,
+    #[serde(default)]
     pub bvid: String,
+    #[serde(default)]
     pub video_title: String,
     pub content: String,
+    #[serde(default)]
     pub user: String,
+    #[serde(default)]
     pub uid: String,
     pub time: i64,
     pub reply_time: i64,
     pub reply_content: String,
     pub timestamp: String,
+    #[serde(default)]
     pub parent_id: Option<String>,
+    #[serde(default)]
     pub root_id: Option<String>,
+    #[serde(default)]
     pub depth: u32,
 }
 
@@ -37,7 +44,7 @@ const JSON_FILE: &str = "history.json";
 const JSON_BAK: &str = "history.json.bak";
 
 pub struct HistoryManager {
-    conn: Mutex<Connection>,
+    conn: Mutex<Option<Connection>>,
 }
 
 impl HistoryManager {
@@ -71,7 +78,7 @@ impl HistoryManager {
         .expect("Cannot create history table");
 
         let hm = Self {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Some(conn)),
         };
 
         // Auto-migrate from old JSON if present
@@ -80,11 +87,22 @@ impl HistoryManager {
         hm
     }
 
-    /// WAL checkpoint: flush WAL to main DB file (call before clearing data)
-    pub fn checkpoint(&self) {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
-        log::info!("WAL checkpoint completed");
+    /// Close the connection: WAL checkpoint + drop. Must be called `&mut` to release lock.
+    pub fn close(&mut self) {
+        let mut guard = self.conn.lock().unwrap();
+        if let Some(conn) = guard.take() {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
+        }
+        log::info!("SQLite connection closed");
+    }
+
+    /// Internal: lock and get &Connection (panics if already closed)
+    fn with_conn<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Connection) -> R,
+    {
+        let guard = self.conn.lock().unwrap();
+        f(guard.as_ref().expect("DB connection already closed"))
     }
 
     // ── Auto-migration ──
@@ -105,10 +123,9 @@ impl HistoryManager {
 
         // Check if DB already has data
         let count: i64 = self
-            .conn
-            .lock()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            })
             .unwrap_or(0);
 
         if count > 0 {
@@ -126,6 +143,7 @@ impl HistoryManager {
                 Ok(entries) => {
                     let total = entries.len();
                     let conn = self.conn.lock().unwrap();
+                    let conn = conn.as_ref().expect("DB connection closed");
                     let tx = conn.unchecked_transaction().unwrap();
                     {
                         let mut stmt = tx
@@ -200,50 +218,53 @@ impl HistoryManager {
             .as_secs() as i64;
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO history
-            (comment_id, bvid, video_title, content, user, uid,
-             time, reply_time, reply_content, timestamp,
-             parent_id, root_id, depth)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![
-                comment_id,
-                bvid,
-                video_title,
-                content,
-                user,
-                uid,
-                ctime,
-                reply_time,
-                reply_content,
-                timestamp,
-                parent_id,
-                root_id,
-                depth,
-            ],
-        )
-        .ok();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO history
+                (comment_id, bvid, video_title, content, user, uid,
+                 time, reply_time, reply_content, timestamp,
+                 parent_id, root_id, depth)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![
+                    comment_id,
+                    bvid,
+                    video_title,
+                    content,
+                    user,
+                    uid,
+                    ctime,
+                    reply_time,
+                    reply_content,
+                    timestamp,
+                    parent_id,
+                    root_id,
+                    depth,
+                ],
+            )
+            .ok();
+        });
     }
 
     // ── Query ──
 
     pub fn is_processed(&self, comment_id: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT COUNT(*) FROM history WHERE comment_id = ?1",
-            params![comment_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|c| c > 0)
-        .unwrap_or(false)
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM history WHERE comment_id = ?1",
+                params![comment_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false)
+        })
     }
 
     pub fn total_replied(&self) -> u64 {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get::<_, i64>(0))
-            .map(|c| c as u64)
-            .unwrap_or(0)
+        self.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get::<_, i64>(0))
+                .map(|c| c as u64)
+                .unwrap_or(0)
+        })
     }
 
     /// Paginated query (ordered by reply_time DESC)
@@ -252,27 +273,27 @@ impl HistoryManager {
         page: u32,
         page_size: u32,
     ) -> (u32, Vec<HistoryEntry>) {
-        let conn = self.conn.lock().unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
-            .unwrap_or(0);
+        let total: i64 = self.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+        })
+        .unwrap_or(0);
 
         let offset = ((page.saturating_sub(1)) * page_size) as i64;
         let limit = page_size as i64;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT comment_id, bvid, video_title, content, user, uid,
-                        time, reply_time, reply_content, timestamp,
-                        parent_id, root_id, depth
-                 FROM history
-                 ORDER BY reply_time DESC
-                 LIMIT ?1 OFFSET ?2",
-            )
-            .unwrap();
+        let entries: Vec<HistoryEntry> = self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT comment_id, bvid, video_title, content, user, uid,
+                            time, reply_time, reply_content, timestamp,
+                            parent_id, root_id, depth
+                     FROM history
+                     ORDER BY reply_time DESC
+                     LIMIT ?1 OFFSET ?2",
+                )
+                .unwrap();
 
-        let entries = stmt
-            .query_map(params![limit, offset], |row| {
+            stmt.query_map(params![limit, offset], |row| {
                 Ok(HistoryEntry {
                     comment_id: row.get(0)?,
                     bvid: row.get(1)?,
@@ -291,26 +312,26 @@ impl HistoryManager {
             })
             .unwrap()
             .filter_map(|r| r.ok())
-            .collect();
+            .collect()
+        });
 
         (total as u32, entries)
     }
 
     /// Grouped by bvid (for history page card view)
     pub fn query_grouped(&self) -> Vec<(String, String, Vec<HistoryEntry>)> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT comment_id, bvid, video_title, content, user, uid,
-                        time, reply_time, reply_content, timestamp,
-                        parent_id, root_id, depth
-                 FROM history
-                 ORDER BY reply_time DESC",
-            )
-            .unwrap();
+        let entries: Vec<HistoryEntry> = self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT comment_id, bvid, video_title, content, user, uid,
+                            time, reply_time, reply_content, timestamp,
+                            parent_id, root_id, depth
+                     FROM history
+                     ORDER BY reply_time DESC",
+                )
+                .unwrap();
 
-        let entries: Vec<HistoryEntry> = stmt
-            .query_map([], |row| {
+            stmt.query_map([], |row| {
                 Ok(HistoryEntry {
                     comment_id: row.get(0)?,
                     bvid: row.get(1)?,
@@ -329,7 +350,8 @@ impl HistoryManager {
             })
             .unwrap()
             .filter_map(|r| r.ok())
-            .collect();
+            .collect()
+        });
 
         // Preserve bvid appearance order (descending by reply_time), merge same bvid
         let mut seen = HashSet::new();
@@ -355,10 +377,11 @@ impl HistoryManager {
     // ── Delete ──
 
     pub fn clear(&self) {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM history", []).ok();
-        // VACUUM to reclaim disk space
-        conn.execute("VACUUM", []).ok();
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM history", []).ok();
+            // VACUUM to reclaim disk space
+            conn.execute("VACUUM", []).ok();
+        });
         log::info!("SQLite history cleared");
     }
 
@@ -374,6 +397,7 @@ impl HistoryManager {
 
         let total = entries.len() as u32;
         let conn = self.conn.lock().unwrap();
+        let conn = conn.as_ref().ok_or("DB connection closed")?;
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Transaction failed: {}", e))?;
@@ -470,7 +494,6 @@ mod tests {
 
         let groups = hm.query_grouped();
         assert_eq!(groups.len(), 2);
-        // BV_B has larger reply_time, appears first
         assert_eq!(groups[0].0, "BV_B");
         assert_eq!(groups[0].2.len(), 1);
         assert_eq!(groups[1].0, "BV_A");
