@@ -5,6 +5,11 @@
 /config.toml
 /bilibili_cookie.json
 /history.json
+/history.json.bak
+/history.db
+*.db-journal
+*.db-wal
+*.db-shm
 /video_cache.json
 /logs/
 *.log

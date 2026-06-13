@@ -348,7 +348,7 @@ async fn process_comments(
 
                 // 保存到历史
                 {
-                    let mut history = state.history.lock().await;
+                    let history = state.history.lock().await;
                     history.add(
                         &comment.comment_id,
                         &video.bvid,

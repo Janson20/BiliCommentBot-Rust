@@ -19,7 +19,9 @@ toml_edit = { version = "0.22", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json", "gzip", "deflate", "brotli", "cookies", "charset"] }
 tokio = { version = "1", features = ["full"] }
 md5 = "0.7"
+bcrypt = "0.16"
 sha2 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
 log = "0.4"
 env_logger = "0.11"
 chrono = { version = "0.4", features = ["serde"] }

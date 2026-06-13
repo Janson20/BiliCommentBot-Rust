@@ -1,5 +1,5 @@
 /// Tauri 命令桥接层 — 所有前端 ↔ 后端交互接口
-use sha2::Digest;
+use bcrypt::{hash, verify, DEFAULT_COST};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
@@ -109,10 +109,16 @@ pub async fn migrate_from_old_project(
         if let Err(e) = std::fs::copy(&history_src, &dest) {
             errors.push(format!("history.json: {}", e));
         } else {
-            migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut history = bot_state.history.lock().await;
-            let new_hm = crate::history::HistoryManager::new(dest);
-            *history = new_hm;
+            let history = bot_state.history.lock().await;
+            match history.import_from_json(&dest) {
+                Ok(n) => {
+                    migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    log::info!("已从旧项目导入 {} 条历史记录", n);
+                }
+                Err(e) => errors.push(format!("history.json 导入失败: {}", e)),
+            }
+            // 清理临时 JSON 文件
+            let _ = std::fs::remove_file(&dest);
         }
     }
 
@@ -308,10 +314,7 @@ pub async fn get_history(
     let history = bot_state.history.lock().await;
     let p = page.unwrap_or(1).max(1);
     let ps = page_size.unwrap_or(50).min(200);
-    let total = history.entries.len() as u32;
-    let start = ((p - 1) * ps) as usize;
-    let end = (start + ps as usize).min(history.entries.len());
-    let items: Vec<&HistoryEntry> = history.entries[start..end].iter().collect();
+    let (total, items) = history.query_paginated(p, ps);
 
     Ok(serde_json::json!({
         "total": total,
@@ -327,23 +330,20 @@ pub async fn get_history_grouped(
     bot_state: State<'_, Arc<BotState>>,
 ) -> Result<serde_json::Value, String> {
     let history = bot_state.history.lock().await;
-    let mut map: std::collections::BTreeMap<String, Vec<&HistoryEntry>> = std::collections::BTreeMap::new();
-    for entry in history.entries.iter().rev() {
-        let key = &entry.bvid;
-        map.entry(key.clone()).or_default().push(entry);
-    }
+    let groups_raw = history.query_grouped();
 
-    let groups: Vec<serde_json::Value> = map
+    let groups: Vec<serde_json::Value> = groups_raw
         .into_iter()
-        .map(|(bvid, entries)| {
-            // 构建评论树
+        .map(|(bvid, video_title, entries)| {
+            let reply_count = entries.len();
+            let last_reply_time = entries.first().map(|e| e.timestamp.clone());
             let tree = build_comment_tree_from_entries(&entries);
 
             serde_json::json!({
                 "bvid": bvid,
-                "video_title": entries.first().map(|e| &e.video_title).unwrap_or(&String::new()),
-                "reply_count": entries.len(),
-                "last_reply_time": entries.first().map(|e| &e.timestamp),
+                "video_title": video_title,
+                "reply_count": reply_count,
+                "last_reply_time": last_reply_time,
                 "comments": tree,
                 "flat_entries": entries,
             })
@@ -353,8 +353,7 @@ pub async fn get_history_grouped(
     Ok(serde_json::json!(groups))
 }
 
-fn build_comment_tree_from_entries(entries: &[&HistoryEntry]) -> serde_json::Value {
-    // 简化：按 root_id 分组，主评论为一级，子评论嵌套
+fn build_comment_tree_from_entries(entries: &[HistoryEntry]) -> serde_json::Value {
     let mut roots: Vec<serde_json::Value> = Vec::new();
     let children_map: std::collections::HashMap<&str, Vec<&HistoryEntry>> = entries
         .iter()
@@ -377,7 +376,6 @@ fn build_comment_tree_from_entries(entries: &[&HistoryEntry]) -> serde_json::Val
         }));
     }
 
-    // 如果没找到根评论，把 orphans 也放进去
     if roots.is_empty() {
         for entry in entries.iter() {
             if !children_map.contains_key(entry.comment_id.as_str()) {
@@ -400,7 +398,7 @@ fn build_comment_tree_from_entries(entries: &[&HistoryEntry]) -> serde_json::Val
 fn build_children_json(
     parent_id: &str,
     children_map: &std::collections::HashMap<&str, Vec<&HistoryEntry>>,
-    all: &[&HistoryEntry],
+    _all: &[HistoryEntry],
 ) -> serde_json::Value {
     let children = children_map.get(parent_id);
     if children.is_none() {
@@ -410,7 +408,7 @@ fn build_children_json(
         .unwrap()
         .iter()
         .map(|child| {
-            let grandchildren = build_children_json(&child.comment_id, children_map, all);
+            let grandchildren = build_children_json(&child.comment_id, children_map, _all);
             serde_json::json!({
                 "comment_id": child.comment_id,
                 "user": child.user,
@@ -429,7 +427,7 @@ fn build_children_json(
 pub async fn clear_history(
     bot_state: State<'_, Arc<BotState>>,
 ) -> Result<(), String> {
-    let mut history = bot_state.history.lock().await;
+    let history = bot_state.history.lock().await;
     history.clear();
     Ok(())
 }
@@ -459,7 +457,7 @@ pub async fn list_ollama_models(
 }
 
 // ════════════════════════════════════════════════════════════════
-//  密码安全
+//  密码安全（bcrypt + 兼容旧 SHA-256 密码自动升级）
 // ════════════════════════════════════════════════════════════════
 
 #[tauri::command]
@@ -473,12 +471,14 @@ pub async fn set_password(
         cfg.auth.password = String::new();
     } else {
         cfg.auth.enabled = true;
-        let hash = sha2::Sha256::digest(password.as_bytes());
-        cfg.auth.password = format!("{:x}", hash);
+        let hashed = hash(password.as_bytes(), DEFAULT_COST)
+            .map_err(|e| format!("密码哈希失败: {}", e))?;
+        cfg.auth.password = hashed;
     }
     app_config.save(cfg).map_err(|e| e.to_string())
 }
 
+/// 验证密码。支持 bcrypt 以及旧版 SHA-256 哈希（自动升级）
 #[tauri::command]
 pub async fn verify_password(
     app_config: State<'_, AppConfig>,
@@ -488,6 +488,29 @@ pub async fn verify_password(
     if !cfg.auth.enabled || cfg.auth.password.is_empty() {
         return Ok(true);
     }
-    let hash = sha2::Sha256::digest(input.as_bytes());
-    Ok(format!("{:x}", hash) == cfg.auth.password)
+
+    let stored = &cfg.auth.password;
+
+    // bcrypt hash 以 $2b$ / $2a$ / $2y$ 开头
+    if stored.starts_with("$2") {
+        return verify(input.as_bytes(), stored)
+            .map_err(|e| format!("密码验证失败: {}", e));
+    }
+
+    // 兼容旧版 SHA-256 hex（64位十六进制）
+    use sha2::Digest;
+    let sha256_input = sha2::Sha256::digest(input.as_bytes());
+    let sha256_hex = format!("{:x}", sha256_input);
+    if sha256_hex == *stored {
+        // 自动升级为 bcrypt
+        let upgraded = hash(input.as_bytes(), DEFAULT_COST)
+            .map_err(|e| format!("密码升级失败: {}", e))?;
+        let mut new_cfg = app_config.get();
+        new_cfg.auth.password = upgraded;
+        app_config.save(new_cfg).map_err(|e| e.to_string())?;
+        log::info!("旧版 SHA-256 密码已自动升级为 bcrypt");
+        return Ok(true);
+    }
+
+    Ok(false)
 }

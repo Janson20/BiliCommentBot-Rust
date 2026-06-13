@@ -70,7 +70,7 @@ fn main() {
             let (reload_tx, _) = broadcast::channel::<RawConfig>(8);
 
             // 历史管理器
-            let history = HistoryManager::new(std::path::PathBuf::from("history.json"));
+            let history = HistoryManager::new(std::path::Path::new("history.db"));
 
             // 频率控制器
             let rate_limiter = RateLimiter::new(
