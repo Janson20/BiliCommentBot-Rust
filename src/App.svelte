@@ -58,14 +58,19 @@
       }
     }).then((fn) => { unlistenFn = fn; });
 
-    // 后台加载配置
+    // 后台加载配置 → 决定是否显示新手向导
+    // 条件：无 B站登录凭证 且 无 AI 配置 → 视为首次使用
     (async () => {
       try {
         const cfg = await getConfig();
-        if (
-          !cfg?.bilibili?.uid ||
-          (!cfg?.bilibili?.cookie && !cfg?.deepseek?.api_key)
-        ) {
+        const hasLogin = !!(cfg?.bilibili?.cookie && cfg?.bilibili?.uid);
+        const hasAi = !!(cfg?.deepseek?.api_key) || !!(
+          cfg?.ai?.provider === "ollama" &&
+          cfg?.ollama?.base_url &&
+          cfg?.ollama?.model
+        );
+        // 两者缺一则显示向导
+        if (!hasLogin || !hasAi) {
           wizardDone = false;
         } else {
           wizardDone = true;

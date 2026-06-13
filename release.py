@@ -7,7 +7,7 @@ BiliCommentBot-RS 发版脚本
 功能:
   1. 校验版本号 (semver)
   2. 预检查: 工作区干净、tag 不存在、remote 已配置
-  3. 同步更新 package.json / tauri.conf.json / Cargo.toml 版本号
+  3. 同步更新 package.json / tauri.conf.json / Cargo.toml / Settings.svelte 版本号
   4. git commit + tag + push --follow-tags
   5. 触发 GitHub Action 自动构建并发布 Release
 """
@@ -26,6 +26,7 @@ VERSION_FILES = [
     ROOT / "package.json",
     ROOT / "src-tauri" / "tauri.conf.json",
     ROOT / "src-tauri" / "Cargo.toml",
+    ROOT / "src" / "pages" / "Settings.svelte",
 ]
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -158,12 +159,29 @@ def update_cargo_toml(version: str):
     path.write_text("".join(lines), "utf-8")
 
 
+def update_settings_svelte(version: str):
+    """更新 Settings.svelte 关于页面的版本号"""
+    path = ROOT / "src" / "pages" / "Settings.svelte"
+    content = path.read_text("utf-8")
+    pattern = r"(BiliCommentBot-RS v)\d+\.\d+\.\d+"
+    old = re.search(pattern, content)
+    if not old:
+        print("[ERROR] 未在 Settings.svelte 中找到版本号")
+        sys.exit(1)
+    old_str = old.group(0)
+    new_str = f"BiliCommentBot-RS v{version}"
+    content = content.replace(old_str, new_str, 1)
+    path.write_text(content, "utf-8")
+    print(f"  Settings.svelte: {old_str} -> {new_str}")
+
+
 def sync_versions(version: str):
     """同步所有版本文件"""
     print("[INFO] 同步版本号...")
     update_package_json(version)
     update_tauri_conf(version)
     update_cargo_toml(version)
+    update_settings_svelte(version)
     print("[OK] 版本号同步完成")
 
 
