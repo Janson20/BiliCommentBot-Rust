@@ -123,9 +123,11 @@ pub async fn migrate_from_old_project(
             errors.push(format!("bilibili_cookie.json: {}", e));
         } else {
             migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut cm = bot_state.cookie_manager.lock().await;
-            if let Err(e) = cm.load_from_file(&dest) {
-                errors.push(format!("加载Cookie: {}", e));
+            if let Ok(mut cm) = bot_state.cookie_manager.try_lock() {
+                let _ = cm.load_from_file(&dest);
+            } else {
+                let mut cm = bot_state.cookie_manager.lock().await;
+                let _ = cm.load_from_file(&dest);
             }
         }
     }
@@ -161,11 +163,48 @@ pub async fn generate_qrcode(
 
 #[tauri::command]
 pub async fn poll_qr_login(
+    app_config: State<'_, AppConfig>,
     bot_state: State<'_, Arc<BotState>>,
     qrcode_key: String,
 ) -> Result<crate::cookie::QrPollResult, String> {
-    let cm = bot_state.cookie_manager.lock().await;
-    cm.poll_qr_login(&qrcode_key).await.map_err(|e| e.to_string())
+    let mut cm = bot_state.cookie_manager.lock().await;
+    let result = cm.poll_qr_login(&qrcode_key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 扫码成功后自动保存 Cookie + refresh_token + 更新 config.toml
+    if result.code == 0 && !result.cookies.is_empty() {
+        cm.cookies = result.cookies.clone();
+        if let Some(ref rt) = result.refresh_token {
+            cm.refresh_token = rt.clone();
+        }
+        cm.csrf_token = cm.get_csrf_from_cookie();
+        let cookie_str = cm.get_cookie_str();
+        let refresh_token = cm.refresh_token.clone();
+        let _ = cm.save_to_file(&PathBuf::from(crate::cookie::DEFAULT_COOKIE_FILE));
+        log::info!("扫码Cookie已保存，共 {} 条", result.cookies.len());
+
+        // 验证并获取 UID
+        let uid = {
+            let verify = cm.verify_cookie().await;
+            if verify.valid { verify.uid } else { None }
+        };
+        drop(cm);
+
+        // 更新 bot_state 内存配置
+        {
+            let mut cfg = bot_state.config.write().await;
+            cfg.bilibili.cookie = cookie_str;
+            cfg.bilibili.refresh_token = refresh_token;
+            if let Some(u) = uid {
+                cfg.bilibili.uid = u;
+            }
+            // 持久化到 config.toml
+            let _ = app_config.save(cfg.clone());
+        }
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -227,6 +266,7 @@ pub async fn get_video_list(
         .gzip(true)
         .deflate(true)
         .brotli(true)
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
 

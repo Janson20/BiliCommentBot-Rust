@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import { setPassword, checkOllama, listOllamaModels, getConfig } from "../lib/api.js";
   import { showToast } from "../lib/stores.js";
 

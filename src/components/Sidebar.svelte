@@ -1,6 +1,6 @@
 <script>
   import { isRunning } from "../lib/stores.js";
-  import { push } from "svelte-spa-router";
+  import { currentRoute, navigate } from "../lib/router.js";
 
   const navItems = [
     { path: "/", label: "仪表盘", icon: "📊" },
@@ -10,10 +10,6 @@
     { path: "/history", label: "回复历史", icon: "📋" },
     { path: "/settings", label: "系统设置", icon: "🛠" },
   ];
-
-  function navigate(path) {
-    push(path);
-  }
 </script>
 
 <aside class="sidebar">
@@ -25,8 +21,8 @@
     {#each navItems as item}
       <button
         class="nav-btn"
-        class:active={$location === item.path}
-        on:click={() => navigate(item.path)}
+        class:active={$currentRoute === item.path}
+        on:click={() => { navigate(item.path); }}
       >
         <span class="nav-icon">{item.icon}</span>
         <span class="nav-label">{item.label}</span>
@@ -38,11 +34,6 @@
     <span class="status-text">{$isRunning ? "运行中" : "已停止"}</span>
   </div>
 </aside>
-
-<script context="module">
-  import { location as loc } from "svelte-spa-router";
-  const location = loc;
-</script>
 
 <style>
   .sidebar {

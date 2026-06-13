@@ -213,15 +213,40 @@ impl CookieManager {
             ("source", "main-fe-header".to_string()),
         ];
 
-        let resp = self
+        let req = self
             .client
             .get(POLL_URL)
             .query(&params)
             .header("User-Agent", HEADERS_UA)
             .header("Referer", "https://www.bilibili.com")
-            .send()
+            .header("Origin", "https://www.bilibili.com")
+            .build()
+            .context("构造轮询请求失败")?;
+
+        let resp = self
+            .client
+            .execute(req)
             .await
             .context("轮询扫码状态失败")?;
+
+        let mut cookies = HashMap::new();
+        let mut refresh_token: Option<String> = None;
+
+        // 从响应头的 Set-Cookie 提取关键 Cookie（扫码成功时 B站 通过 HTTP header 下发）
+        for header_value in resp.headers().get_all("set-cookie") {
+            if let Ok(cookie_str) = header_value.to_str() {
+                for part in cookie_str.split(';') {
+                    let part = part.trim();
+                    if let Some((key, value)) = part.split_once('=') {
+                        let k = key.trim().to_string();
+                        let v = value.trim().to_string();
+                        if !v.is_empty() {
+                            cookies.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
 
         let json: serde_json::Value = resp.json().await.context("解析轮询响应失败")?;
         let data = &json["data"];
@@ -231,17 +256,12 @@ impl CookieManager {
             .unwrap_or("未知状态")
             .to_string();
 
-        let mut cookies = HashMap::new();
-        let mut refresh_token: Option<String> = None;
-
-        // 扫码成功 (code==0) 或 已确认 (code==0 时 url 中含有 cookie 信息)
+        // 扫码成功 (code==0)
         if poll_code == 0 {
-            // B站 扫码成功后响应中可能直接带了 set-cookie 头
-            // 但轮询接口不会直接给 cookie，需要通过后续请求获取
-            // 此处使用 refresh_token 字段
+            // 从 JSON 中可能也有 refresh_token
             refresh_token = data["refresh_token"].as_str().map(|s| s.to_string());
 
-            // 尝试从 B站 返回的 cookie 字段获取
+            // B站 有时也在 JSON 中直接返回 cookie_info
             if let Some(cookie_map) = data["cookie_info"].as_object() {
                 for (k, v) in cookie_map {
                     if let Some(vs) = v.as_str() {
@@ -249,9 +269,13 @@ impl CookieManager {
                     }
                 }
             }
-        }
 
-        // 非成功状态但已扫码 (86090 = 已扫码未确认, 86101 = 已扫码待确认)
+            log::info!(
+                "扫码登录成功，获取到 {} 个 Cookie: {:?}",
+                cookies.len(),
+                cookies.keys().collect::<Vec<_>>()
+            );
+        }
         Ok(QrPollResult {
             code: poll_code,
             message,

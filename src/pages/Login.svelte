@@ -1,4 +1,5 @@
 <script>
+  import { onMount, onDestroy } from "svelte";
   import { generateQrcode, pollQrLogin, verifyCookie, setCookieManually, refreshCookie } from "../lib/api.js";
   import { loginStatus, showToast } from "../lib/stores.js";
 

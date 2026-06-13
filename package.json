@@ -16,7 +16,6 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^1.6.0",
-    "svelte-spa-router": "^3.3.0"
+    "@tauri-apps/api": "^1.6.0"
   }
 }

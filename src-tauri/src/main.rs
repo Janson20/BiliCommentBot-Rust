@@ -39,13 +39,15 @@ fn main() {
             let cfg = app_config.get();
             let rl = &cfg.rate_limit;
 
-            // 初始化 CookieManager
+            // 初始化 CookieManager（含10秒超时防止挂起）
             let mut cookie_mgr =
                 CookieManager::from_client(reqwest::Client::builder()
                     .cookie_store(true)
                     .gzip(true)
                     .deflate(true)
                     .brotli(true)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .connect_timeout(std::time::Duration::from_secs(5))
                     .build()
                     .expect("Failed to build cookie HTTP client"));
 
@@ -93,7 +95,7 @@ fn main() {
             // 后台任务：广播 BotEvent 到 Tauri 窗口
             let window = app.get_window("main").unwrap();
             let mut event_rx = event_tx.subscribe();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 loop {
                     match event_rx.recv().await {
                         Ok(event) => {

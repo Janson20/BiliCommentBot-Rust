@@ -1,12 +1,13 @@
 <script>
   import { createEventDispatcher } from "svelte";
-  import { migrateFromOld, getConfig, verifyCookie } from "../lib/api.js";
-  import { loginStatus, showToast } from "../lib/stores.js";
-  import { push } from "svelte-spa-router";
+  import { open } from "@tauri-apps/api/dialog";
+  import { migrateFromOld } from "../lib/api.js";
+  import { showToast } from "../lib/stores.js";
+  import { navigate } from "../lib/router.js";
 
   const dispatch = createEventDispatcher();
 
-  let step = 0; // 0=选择, 1=迁移文件夹, 2=完成
+  let step = 0;
   let oldDir = "";
   let migrating = false;
   let migrateResult = null;
@@ -15,12 +16,23 @@
     step = 2;
     setTimeout(() => {
       dispatch("done");
-      push("/");
+      navigate("/");
     }, 500);
   }
 
   function chooseMigrate() {
     step = 1;
+  }
+
+  async function selectFolder() {
+    try {
+      const selected = await open({ directory: true, multiple: false, title: "选择旧版 BiliCommentBot 项目文件夹" });
+      if (selected && typeof selected === "string") {
+        oldDir = selected;
+      }
+    } catch (e) {
+      showToast("error", "选择文件夹失败: " + e);
+    }
   }
 
   async function doMigrate() {
@@ -40,7 +52,7 @@
 
   function doneWizard() {
     dispatch("done");
-    push("/");
+    navigate("/");
   }
 </script>
 
@@ -70,9 +82,11 @@
       <div class="dir-input">
         <input
           type="text"
-          placeholder="D:\your\BiliCommentBot 路径"
+          placeholder="点击右侧按钮选择文件夹..."
           bind:value={oldDir}
+          readonly
         />
+        <button class="btn-browse" on:click={selectFolder}>📁 浏览...</button>
       </div>
       <div class="wizard-actions">
         <button class="btn-back" on:click={() => (step = 0)}>← 返回</button>
@@ -124,13 +138,20 @@
   .option-card .icon { font-size: 2rem; }
   .option-card .title { font-weight: 600; font-size: 0.95rem; }
   .option-card .desc { text-align: center; color: #8aa0b8; line-height: 1.4; }
-  .dir-input { margin-bottom: 20px; }
-  .dir-input input {
-    width: 100%; padding: 10px 14px; border-radius: 8px;
-    border: 1px solid #1e3a5f; background: #0d1b2a; color: #e0e8f0;
-    font-size: 0.85rem; outline: none;
+  .dir-input {
+    display: flex; gap: 8px; margin-bottom: 20px; align-items: center;
   }
-  .dir-input input:focus { border-color: #00b4d8; }
+  .dir-input input {
+    flex: 1; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #1e3a5f; background: #0d1b2a; color: #e0e8f0;
+    font-size: 0.85rem; outline: none; cursor: default;
+  }
+  .btn-browse {
+    padding: 10px 16px; border: 1px solid #1e3a5f; border-radius: 8px;
+    background: #16213e; color: #b0c4de; cursor: pointer; font-size: 0.85rem;
+    white-space: nowrap; transition: 0.15s;
+  }
+  .btn-browse:hover { background: #1e3a5f; color: #e0e8f0; }
   .wizard-actions {
     display: flex; justify-content: space-between; gap: 10px;
   }
