@@ -1,0 +1,40 @@
+[package]
+name = "bili-comment-bot-rs"
+version = "0.1.0"
+description = "B站评论自动回复机器人 - Rust + Tauri 桌面版"
+authors = ["BiliCommentBot Contributors"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.75"
+
+[build-dependencies]
+tauri-build = { version = "1", features = [] }
+
+[dependencies]
+tauri = { version = "1", features = ["shell-open", "dialog-all", "fs-all", "path-all", "process-all", "window-all", "clipboard-all", "protocol-all"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "0.8", features = ["parse", "display"] }
+toml_edit = { version = "0.22", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate", "brotli", "cookies", "charset"] }
+tokio = { version = "1", features = ["full"] }
+md5 = "0.7"
+sha2 = "0.10"
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+anyhow = "1"
+thiserror = "2"
+urlencoding = "2"
+flate2 = "1"
+rand = "0.8"
+url = "2"
+regex = "1"
+qrcode = "0.14"  # qrcode generation (image feature for PNG output)
+image = { version = "0.25", default-features = false, features = ["png"] }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

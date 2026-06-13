@@ -1,0 +1,12 @@
+/tmp
+/node_modules
+/src-tauri/target
+/dist
+/config.toml
+/bilibili_cookie.json
+/history.json
+/video_cache.json
+/logs/
+*.log
+*.msi
+*.msi.*
