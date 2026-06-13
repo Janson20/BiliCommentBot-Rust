@@ -130,6 +130,7 @@ fn main() {
             commands::get_video_list,
             commands::trigger_manual_check,
             commands::get_history,
+            commands::get_history_grouped,
             commands::clear_history,
             commands::check_ollama_availability,
             commands::list_ollama_models,

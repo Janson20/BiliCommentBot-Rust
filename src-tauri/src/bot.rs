@@ -340,11 +340,15 @@ async fn process_comments(
                     history.add(
                         &comment.comment_id,
                         &video.bvid,
+                        &video.title,
                         &comment.content,
                         &comment.user,
                         &comment.uid,
                         comment.ctime,
                         &full_reply,
+                        comment.parent_id.as_deref(),
+                        comment.root_id.as_deref(),
+                        comment.depth,
                     );
                 }
                 state.rate_limiter.record_success();

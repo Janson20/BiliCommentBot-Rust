@@ -321,6 +321,110 @@ pub async fn get_history(
     }))
 }
 
+/// 按视频分组的历史记录（卡片视图用）
+#[tauri::command]
+pub async fn get_history_grouped(
+    bot_state: State<'_, Arc<BotState>>,
+) -> Result<serde_json::Value, String> {
+    let history = bot_state.history.lock().await;
+    let mut map: std::collections::BTreeMap<String, Vec<&HistoryEntry>> = std::collections::BTreeMap::new();
+    for entry in history.entries.iter().rev() {
+        let key = &entry.bvid;
+        map.entry(key.clone()).or_default().push(entry);
+    }
+
+    let groups: Vec<serde_json::Value> = map
+        .into_iter()
+        .map(|(bvid, entries)| {
+            // 构建评论树
+            let tree = build_comment_tree_from_entries(&entries);
+
+            serde_json::json!({
+                "bvid": bvid,
+                "video_title": entries.first().map(|e| &e.video_title).unwrap_or(&String::new()),
+                "reply_count": entries.len(),
+                "last_reply_time": entries.first().map(|e| &e.timestamp),
+                "comments": tree,
+                "flat_entries": entries,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!(groups))
+}
+
+fn build_comment_tree_from_entries(entries: &[&HistoryEntry]) -> serde_json::Value {
+    // 简化：按 root_id 分组，主评论为一级，子评论嵌套
+    let mut roots: Vec<serde_json::Value> = Vec::new();
+    let children_map: std::collections::HashMap<&str, Vec<&HistoryEntry>> = entries
+        .iter()
+        .filter(|e| e.parent_id.as_deref().is_some())
+        .fold(std::collections::HashMap::new(), |mut acc, e| {
+            acc.entry(e.parent_id.as_deref().unwrap()).or_default().push(e);
+            acc
+        });
+
+    for entry in entries.iter().filter(|e| e.depth == 0 || e.parent_id.is_none()) {
+        let children = build_children_json(&entry.comment_id, &children_map, entries);
+        roots.push(serde_json::json!({
+            "comment_id": entry.comment_id,
+            "user": entry.user,
+            "content": entry.content,
+            "reply_content": entry.reply_content,
+            "timestamp": entry.timestamp,
+            "depth": entry.depth,
+            "children": children,
+        }));
+    }
+
+    // 如果没找到根评论，把 orphans 也放进去
+    if roots.is_empty() {
+        for entry in entries.iter() {
+            if !children_map.contains_key(entry.comment_id.as_str()) {
+                roots.push(serde_json::json!({
+                    "comment_id": entry.comment_id,
+                    "user": entry.user,
+                    "content": entry.content,
+                    "reply_content": entry.reply_content,
+                    "timestamp": entry.timestamp,
+                    "depth": entry.depth,
+                    "children": [],
+                }));
+            }
+        }
+    }
+
+    serde_json::json!(roots)
+}
+
+fn build_children_json(
+    parent_id: &str,
+    children_map: &std::collections::HashMap<&str, Vec<&HistoryEntry>>,
+    all: &[&HistoryEntry],
+) -> serde_json::Value {
+    let children = children_map.get(parent_id);
+    if children.is_none() {
+        return serde_json::json!([]);
+    }
+    children
+        .unwrap()
+        .iter()
+        .map(|child| {
+            let grandchildren = build_children_json(&child.comment_id, children_map, all);
+            serde_json::json!({
+                "comment_id": child.comment_id,
+                "user": child.user,
+                "content": child.content,
+                "reply_content": child.reply_content,
+                "timestamp": child.timestamp,
+                "depth": child.depth,
+                "children": grandchildren,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
 #[tauri::command]
 pub async fn clear_history(
     bot_state: State<'_, Arc<BotState>>,

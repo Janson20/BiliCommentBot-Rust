@@ -11,6 +11,8 @@ pub struct HistoryEntry {
     pub comment_id: String,
     #[serde(default)]
     pub bvid: String,
+    #[serde(default)]
+    pub video_title: String,
     pub content: String,
     pub user: String,
     pub uid: String,
@@ -18,6 +20,13 @@ pub struct HistoryEntry {
     pub reply_time: i64,
     pub reply_content: String,
     pub timestamp: String,
+    // 树结构字段（楼中楼支持）
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub root_id: Option<String>,
+    #[serde(default)]
+    pub depth: u32,
 }
 
 #[derive(Debug)]
@@ -62,15 +71,20 @@ impl HistoryManager {
         &mut self,
         comment_id: &str,
         bvid: &str,
+        video_title: &str,
         content: &str,
         user: &str,
         uid: &str,
         ctime: i64,
         reply_content: &str,
+        parent_id: Option<&str>,
+        root_id: Option<&str>,
+        depth: u32,
     ) {
         let entry = HistoryEntry {
             comment_id: comment_id.to_string(),
             bvid: bvid.to_string(),
+            video_title: video_title.to_string(),
             content: content.to_string(),
             user: user.to_string(),
             uid: uid.to_string(),
@@ -81,6 +95,9 @@ impl HistoryManager {
                 .as_secs() as i64,
             reply_content: reply_content.to_string(),
             timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            parent_id: parent_id.map(|s| s.to_string()),
+            root_id: root_id.map(|s| s.to_string()),
+            depth,
         };
 
         self.processed_ids.insert(comment_id.to_string());
