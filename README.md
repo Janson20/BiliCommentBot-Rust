@@ -1,4 +1,4 @@
-# BiliCommentBot-RS
+# BiliCommentBot-Rust
 
 B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 
@@ -29,7 +29,7 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 
 ### Windows 安装
 
-1. 下载最新 `.msi` 安装包：[Releases](https://github.com/Janson20/BiliCommentBot-RS/releases)
+1. 下载最新 `.msi` 安装包：[Releases](https://github.com/Janson20/BiliCommentBot-Rust/releases)
 2. 双击安装，桌面自动创建快捷方式
 3. 首次启动自动弹出**新手向导**，引导完成配置
 
