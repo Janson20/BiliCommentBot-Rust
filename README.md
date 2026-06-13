@@ -56,8 +56,32 @@ npm run tauri dev
 
 # 生产构建
 npm run tauri build
-# 输出: src-tauri/target/release/bundle/msi/
+# 输出:
+#   MSI 安装包:  src-tauri/target/release/bundle/msi/
+#   NSIS 安装包: src-tauri/target/release/bundle/nsis/
 ```
+
+### 发版流程（自动化 CI/CD）
+
+通过 `release.py` 脚本一键发版，自动同步版本号、提交、打 tag 并推送触发 GitHub Action 构建和发布 Release。
+
+```bash
+# 预览模式（不执行任何操作）
+python release.py x.x.x --dry-run
+
+# 正式发版（同步版本号 → git commit → git tag → git push）
+python release.py x.x.x
+```
+
+**自动化流程：**
+1. `release.py` 校验版本号、检查工作区状态
+2. 自动同步更新 `package.json` / `tauri.conf.json` / `Cargo.toml` 中的版本号
+3. 提交 `chore: bump version to x.x.x` 并推送 `vx.x.x` tag
+4. GitHub Action 监听 `v*` tag 自动触发：
+   - 构建 Svelte 前端 + Rust 后端
+   - 生成 `.msi` + NSIS `.exe` 安装包
+   - 按[约定式提交](https://www.conventionalcommits.org/zh-hans/)自动生成 Changelog
+   - 创建 GitHub Release 并上传安装包
 
 ---
 

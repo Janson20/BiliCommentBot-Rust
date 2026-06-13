@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (full history for changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install WiX Toolset v3
+        shell: pwsh
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Svelte frontend
+        run: npm run build
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^1.6"
+
+      - name: Build Tauri (MSI + NSIS)
+        shell: pwsh
+        run: npx tauri build
+
+      - name: Locate build artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          MSI=$(find "$BUNDLE_DIR" -maxdepth 3 -name "*.msi" ! -name "*.msi.*" | head -1)
+          NSIS=$(find "$BUNDLE_DIR" -maxdepth 3 \( -name "*_x64-setup.exe" -o -name "*_x64.exe" \) ! -name "*.msi" | head -1)
+          echo "msi=$MSI" >> "$GITHUB_OUTPUT"
+          echo "nsis=$NSIS" >> "$GITHUB_OUTPUT"
+          echo "MSI  -> $MSI"
+          echo "NSIS -> $NSIS"
+          if [ -z "$MSI" ] && [ -z "$NSIS" ]; then
+            echo "ERROR: 未找到构建产物"
+            echo "bundle 目录内容:"
+            find "$BUNDLE_DIR" -type f 2>/dev/null || echo "(bundle 目录不存在)"
+            exit 1
+          fi
+
+      - name: Generate changelog from conventional commits
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          configuration: '{"categories":[],"template":"#{{CHANGELOG}}","pr_template":"- #{{TITLE}} (@#{{AUTHOR}})","commit_template":"- {{SUBJECT}} (@{{AUTHOR}})"}'
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: |
+            ${{ steps.artifacts.outputs.msi }}
+            ${{ steps.artifacts.outputs.nsis }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
