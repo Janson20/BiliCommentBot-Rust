@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-// ════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 //  数据模型
-// ════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -29,9 +29,9 @@ pub struct HistoryEntry {
     pub depth: u32,
 }
 
-// ════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 //  HistoryManager
-// ════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 
 const JSON_FILE: &str = "history.json";
 const JSON_BAK: &str = "history.json.bak";
@@ -41,12 +41,12 @@ pub struct HistoryManager {
 }
 
 impl HistoryManager {
-    /// 新建 SQLite 历史管理器。自动建表 + 从 JSON 迁移（如果存在）
+    /// New SQLite history manager. Auto-create tables + migrate from JSON if present.
     pub fn new(db_path: &Path) -> Self {
-        let conn = Connection::open(db_path).expect("无法打开 history.db");
-        // WAL 模式提升并发性能
+        let conn = Connection::open(db_path).expect("Cannot open history.db");
+        // WAL mode for better concurrent performance
         conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
-        // 建表
+        // Create tables
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS history (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,19 +68,26 @@ impl HistoryManager {
             CREATE INDEX IF NOT EXISTS idx_history_bvid ON history(bvid);
             CREATE INDEX IF NOT EXISTS idx_history_time ON history(time);",
         )
-        .expect("无法创建 history 表");
+        .expect("Cannot create history table");
 
         let hm = Self {
             conn: Mutex::new(conn),
         };
 
-        // 自动迁移旧 JSON → SQLite
+        // Auto-migrate from old JSON if present
         hm.migrate_from_json_if_needed();
 
         hm
     }
 
-    // ── 自动迁移 ──
+    /// WAL checkpoint: flush WAL to main DB file (call before clearing data)
+    pub fn checkpoint(&self) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
+        log::info!("WAL checkpoint completed");
+    }
+
+    // ── Auto-migration ──
 
     fn migrate_from_json_if_needed(&self) {
         let json_path = PathBuf::from(JSON_FILE);
@@ -90,13 +97,13 @@ impl HistoryManager {
             return;
         }
 
-        // 如果已有备份文件，说明迁移已完成，跳过
+        // Skip if backup already exists (migration already done)
         if bak_path.exists() {
-            log::info!("history.json.bak 已存在，跳过迁移");
+            log::info!("history.json.bak exists, skipping migration");
             return;
         }
 
-        // 检查 DB 中是否已有数据
+        // Check if DB already has data
         let count: i64 = self
             .conn
             .lock()
@@ -105,15 +112,15 @@ impl HistoryManager {
             .unwrap_or(0);
 
         if count > 0 {
-            log::info!("数据库已有 {} 条记录，跳过 JSON 迁移", count);
-            // 备份 JSON 文件
+            log::info!("DB already has {} records, skipping JSON migration", count);
+            // Backup JSON file
             if let Err(e) = std::fs::rename(&json_path, &bak_path) {
-                log::error!("重命名 history.json 失败: {}", e);
+                log::error!("Failed to rename history.json: {}", e);
             }
             return;
         }
 
-        // 读取并导入 JSON
+        // Read and import JSON
         match std::fs::read_to_string(&json_path) {
             Ok(content) => match serde_json::from_str::<Vec<HistoryEntry>>(&content) {
                 Ok(entries) => {
@@ -150,28 +157,28 @@ impl HistoryManager {
                         }
                     }
                     tx.commit().unwrap();
-                    log::info!("已从 history.json 迁移 {} 条记录到 SQLite", total);
+                    log::info!("Migrated {} records from history.json to SQLite", total);
                 }
                 Err(e) => {
-                    log::error!("解析 history.json 失败: {}", e);
+                    log::error!("Failed to parse history.json: {}", e);
                     return;
                 }
             },
             Err(e) => {
-                log::error!("读取 history.json 失败: {}", e);
+                log::error!("Failed to read history.json: {}", e);
                 return;
             }
         }
 
-        // 备份原文件
+        // Backup original file
         if let Err(e) = std::fs::rename(&json_path, &bak_path) {
-            log::error!("重命名 history.json 失败: {}", e);
+            log::error!("Failed to rename history.json: {}", e);
         } else {
-            log::info!("history.json 已备份为 history.json.bak");
+            log::info!("history.json backed up as history.json.bak");
         }
     }
 
-    // ── 写入 ──
+    // ── Write ──
 
     pub fn add(
         &self,
@@ -219,7 +226,7 @@ impl HistoryManager {
         .ok();
     }
 
-    // ── 查询 ──
+    // ── Query ──
 
     pub fn is_processed(&self, comment_id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
@@ -239,7 +246,7 @@ impl HistoryManager {
             .unwrap_or(0)
     }
 
-    /// 分页查询（按时间倒序）
+    /// Paginated query (ordered by reply_time DESC)
     pub fn query_paginated(
         &self,
         page: u32,
@@ -289,7 +296,7 @@ impl HistoryManager {
         (total as u32, entries)
     }
 
-    /// 按 bvid 分组查询（用于历史页面卡片视图）
+    /// Grouped by bvid (for history page card view)
     pub fn query_grouped(&self) -> Vec<(String, String, Vec<HistoryEntry>)> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -324,7 +331,7 @@ impl HistoryManager {
             .filter_map(|r| r.ok())
             .collect();
 
-        // 保留 bvid 出现顺序（倒序），同 bvid 合并
+        // Preserve bvid appearance order (descending by reply_time), merge same bvid
         let mut seen = HashSet::new();
         let mut groups: Vec<(String, String, Vec<HistoryEntry>)> = Vec::new();
 
@@ -345,31 +352,31 @@ impl HistoryManager {
         groups
     }
 
-    // ── 删除 ──
+    // ── Delete ──
 
     pub fn clear(&self) {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM history", []).ok();
-        // VACUUM 回收磁盘空间
+        // VACUUM to reclaim disk space
         conn.execute("VACUUM", []).ok();
-        log::info!("已清除 SQLite 历史记录");
+        log::info!("SQLite history cleared");
     }
 
-    /// 从旧版 JSON 文件导入（用于 Python 项目迁移）
+    /// Import from legacy JSON file (for Python project migration)
     pub fn import_from_json(&self, json_path: &Path) -> Result<u32, String> {
         if !json_path.exists() {
-            return Err(format!("文件不存在: {:?}", json_path));
+            return Err(format!("File not found: {:?}", json_path));
         }
         let content =
-            std::fs::read_to_string(json_path).map_err(|e| format!("读取失败: {}", e))?;
+            std::fs::read_to_string(json_path).map_err(|e| format!("Read failed: {}", e))?;
         let entries: Vec<HistoryEntry> =
-            serde_json::from_str(&content).map_err(|e| format!("解析失败: {}", e))?;
+            serde_json::from_str(&content).map_err(|e| format!("Parse failed: {}", e))?;
 
         let total = entries.len() as u32;
         let conn = self.conn.lock().unwrap();
         let tx = conn
             .unchecked_transaction()
-            .map_err(|e| format!("事务失败: {}", e))?;
+            .map_err(|e| format!("Transaction failed: {}", e))?;
         {
             let mut stmt = tx
                 .prepare(
@@ -379,7 +386,7 @@ impl HistoryManager {
                      parent_id, root_id, depth)
                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 )
-                .map_err(|e| format!("准备语句失败: {}", e))?;
+                .map_err(|e| format!("Prepare failed: {}", e))?;
             for e in &entries {
                 stmt.execute(params![
                     e.comment_id,
@@ -399,15 +406,15 @@ impl HistoryManager {
                 .ok();
             }
         }
-        tx.commit().map_err(|e| format!("提交失败: {}", e))?;
-        log::info!("从 JSON 导入 {} 条历史记录到 SQLite", total);
+        tx.commit().map_err(|e| format!("Commit failed: {}", e))?;
+        log::info!("Imported {} history records from JSON to SQLite", total);
         Ok(total)
     }
 }
 
-// ════════════════════════════════════════════════════════════════
-//  测试
-// ════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
+//  Tests
+// ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -463,7 +470,7 @@ mod tests {
 
         let groups = hm.query_grouped();
         assert_eq!(groups.len(), 2);
-        // BV_B 的 reply_time 更大，先出现
+        // BV_B has larger reply_time, appears first
         assert_eq!(groups[0].0, "BV_B");
         assert_eq!(groups[0].2.len(), 1);
         assert_eq!(groups[1].0, "BV_A");

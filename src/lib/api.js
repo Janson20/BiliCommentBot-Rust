@@ -37,3 +37,6 @@ export const listOllamaModels = () => invoke("list_ollama_models");
 export const setPassword = (pwd) => invoke("set_password", { password: pwd });
 export const verifyPassword = (input) =>
   invoke("verify_password", { input });
+
+// ── 清空数据 ──
+export const clearAllData = () => invoke("clear_all_data");

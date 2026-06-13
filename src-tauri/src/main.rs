@@ -136,6 +136,7 @@ fn main() {
             commands::list_ollama_models,
             commands::set_password,
             commands::verify_password,
+            commands::clear_all_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -514,3 +514,118 @@ pub async fn verify_password(
 
     Ok(false)
 }
+
+// ════════════════════════════════════════════════════════════════
+//  清空所有数据（移至回收站）
+// ════════════════════════════════════════════════════════════════
+
+/// 收集工作目录中所有运行时生成的数据文件，停止机器人，关闭数据库，
+/// 将所有数据文件移至系统回收站，然后退出应用。
+#[tauri::command]
+pub async fn clear_all_data(
+    app_handle: tauri::AppHandle,
+    bot_state: State<'_, Arc<BotState>>,
+) -> Result<serde_json::Value, String> {
+    // 1. 停止机器人
+    if bot_state.running.load(std::sync::atomic::Ordering::Relaxed) {
+        bot_state.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        bot_state.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = bot_state.event_tx.send(BotEvent::Status { running: false });
+        log::info!("已停止机器人，准备清空数据");
+        // 等待后台任务退出
+        tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    }
+
+    // 2. 关闭数据库连接（WAL checkpoint 刷盘后断开）
+    {
+        let history = bot_state.history.lock().await;
+        history.checkpoint();
+    }
+
+    // 3. 收集所有运行时数据文件
+    let cwd = std::env::current_dir().map_err(|e| format!("获取工作目录失败: {}", e))?;
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    // 已知固定数据文件
+    let known_names = [
+        "config.toml",
+        "history.db",
+        "history.db-wal",
+        "history.db-shm",
+        "history.json",
+        "history.json.bak",
+        "bilibili_cookie.json",
+        "video_cache.json",
+    ];
+
+    for name in &known_names {
+        let path = cwd.join(name);
+        if path.exists() {
+            files.push(path);
+        }
+    }
+
+    // 根目录 *.log 文件
+    if let Ok(entries) = std::fs::read_dir(&cwd) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".log") && entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                files.push(entry.path());
+            }
+        }
+    }
+
+    // logs/ 目录（整体移至回收站）
+    let logs_dir = cwd.join("logs");
+    if logs_dir.is_dir() {
+        files.push(logs_dir);
+    }
+
+    if files.is_empty() {
+        return Ok(serde_json::json!({
+            "trashed": 0,
+            "total": 0,
+            "errors": [],
+            "message": "没有可清理的数据文件",
+        }));
+    }
+
+    // 4. 逐文件移至回收站
+    let mut trashed = 0u32;
+    for path in &files {
+        match trash::delete(path) {
+            Ok(()) => {
+                trashed += 1;
+                log::info!("已移至回收站: {}", path.display());
+            }
+            Err(e) => {
+                let msg = format!("{}: {}", path.display(), e);
+                log::error!("{}", msg);
+                errors.push(msg);
+            }
+        }
+    }
+
+    log::info!(
+        "清空完成: {}/{} 个文件已移至回收站",
+        trashed,
+        files.len()
+    );
+
+    let result = serde_json::json!({
+        "trashed": trashed,
+        "total": files.len(),
+        "errors": errors,
+    });
+
+    // 5. 延迟退出，让前端收到响应
+    let handle = app_handle.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        handle.exit(0);
+    });
+
+    Ok(result)
+}
