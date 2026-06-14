@@ -87,7 +87,7 @@
 
       {:else if activeTab === "deepseek"}
         <h2>DeepSeek API</h2>
-        <div class="field"><label>API Key</label><input type="text" value={field(cfg.deepseek, "api_key")}
+        <div class="field"><label>API Key <span class="hint">（以 sk- 开头，复制时勿带空格）</span></label><input type="text" value={field(cfg.deepseek, "api_key")}
           on:input={(e) => setField(cfg.deepseek, "api_key", e.target.value)} /></div>
         <div class="field"><label>API 地址</label><input type="text" value={field(cfg.deepseek, "base_url")}
           on:input={(e) => setField(cfg.deepseek, "base_url", e.target.value)} /></div>
@@ -199,6 +199,7 @@
   .tab-content { max-height: 55vh; overflow-y: auto; padding-right: 8px; }
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 0.82rem; color: #8aa0b8; margin-bottom: 4px; }
+  .field label .hint { color: #5a7a9a; font-size: 0.72rem; }
   .field input, .field textarea, .field select {
     width: 100%; padding: 8px 10px; border-radius: 6px;
     border: 1px solid #1e3a5f; background: #0d1b2a; color: #e0e8f0;

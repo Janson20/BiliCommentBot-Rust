@@ -36,6 +36,19 @@ struct ChatMsgContent {
     content: String,
 }
 
+/// 规范化 API Key：去除首尾空白，若缺少 sk- 前缀则自动补全
+fn normalize_api_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("sk-") {
+        trimmed.to_string()
+    } else {
+        format!("sk-{}", trimmed)
+    }
+}
+
 /// 使用 DeepSeek API 生成回复
 pub async fn generate_reply(
     client: &reqwest::Client,
@@ -45,6 +58,13 @@ pub async fn generate_reply(
     video_title: Option<&str>,
     video_desc: Option<&str>,
 ) -> Result<String> {
+    let api_key = normalize_api_key(&api_config.api_key);
+    if api_key.is_empty() {
+        return Err(anyhow::anyhow!(
+            "DeepSeek API Key 未设置，请在配置页面填写 API Key（以 sk- 开头）"
+        ));
+    }
+
     let mut messages = Vec::new();
 
     // System prompt
@@ -99,7 +119,7 @@ pub async fn generate_reply(
 
     let resp = client
         .post(format!("{}/chat/completions", api_config.base_url))
-        .header("Authorization", format!("Bearer {}", api_config.api_key))
+        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(30))
         .json(&request_body)
