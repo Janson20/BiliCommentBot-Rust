@@ -1,6 +1,6 @@
 [package]
 name = "bili-comment-bot-rs"
-version = "0.1.1"
+version = "0.1.2"
 description = "B站评论自动回复机器人 - Rust + Tauri 桌面版"
 authors = ["BiliCommentBot Contributors"]
 license = "MIT"
