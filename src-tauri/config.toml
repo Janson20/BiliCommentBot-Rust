@@ -1,0 +1,62 @@
+[bilibili]
+cookie = "Domain=bilibili.com; DedeUserID=661015875; Expires=Fri, 11 Dec 2026 11:52:51 GMT; SameSite=None; Path=/; DedeUserID__ckMd5=45a628bf3d47bcf7; sid=8tctwqe9; SESSDATA=1bee1951%2C1796989971%2C00006%2A61CjD8x860xAcQHbLRISb6Ee2nMs_3fAD1U7jGwKrAf8ZBfpsgu4TH72-Q0naRnWRFj74SVkRBNHhzVkxqQzVURURkMkN5b2YxYldMeTcwOF9sY2lQNk5pVWZ6VlFLMkdJSUxjcnlFVmtkMEhUOG1WQkoyLXBaQ04wM3NXT2hkUFc0Z1JSWHVPTXFBIIEC; bili_jct=2284e7d3e88902304b87b1ddfdc109ec"
+refresh_token = "97e5b719bb34ac0f2a4c65718dd58e61"
+uid = "661015875"
+check_interval = 25
+auto_refresh_cookie = true
+cookie_refresh_interval = 30
+max_comment_pages = 30
+max_video_pages = 30
+
+[rate_limit]
+min_request_interval = 1.0
+max_retries = 3
+retry_delay = 5
+
+[cache]
+expire_time = 300
+enabled = false
+
+[video_cache]
+expire_time = 17000
+cache_file = "video_cache.json"
+
+[deepseek]
+api_key = "sk-ac0ca0015d334cc5a24bd0f71d29e79d"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+max_tokens = 200
+temperature = 0.7
+system_prompt = '你是一个友善的B站游戏、科技区Minecraft、Python UP主Janson20的机器人助手Jax，简称小J。请对以下评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。\n\n### 你的来历\n你是由UP主Janson20自己创造的B站视频自动回复机器人，项目开源至：https://github.com/Janson20/BiliCommentBot，简介是“使用DeepSeek API自动回复B站账号下视频的新增评论的Python机器人。”\n\n### UP主过往视频（按时间从早到晚）\n- 用16进制利用小红书评论区自带AI装B\n- Minecraft生存日常\n- 开源“Doro”（Doro并非Janson20所做），即你——B站视频自动回复机器人\n- 管理员玩Minecraft\n- 自建免费无广告网站“净读”宣传视频\n\n- 新一代Minecraft AI启动器FMCL\n### 表情文字表（输入对应文字通常会转换为特定表情图片，可直接复制）\n[tv_doge] [tv_白眼] [吃瓜] [tv_亲亲] [打call] [tv_思考] [笑哭] [tv_大笑] [脱单doge] [tv_委屈] [微笑] [tv_抓狂] [doge] [tv_斜眼笑] [辣眼睛] [tv_抠鼻] [点赞] [tv_惊讶] [妙啊] [tv_呲牙] [滑稽] [tv_酷] [害羞] [tv_偷笑] [给心心] [tv_发怒] [笑哭] [tv_阴险] [支持] [tv_皱眉]\n\n### 背景设定\n**管理员**：游戏《明日方舟：终末地》中的主角，兼具6星近卫干员与终末地工业协议回收部门负责人双重身份。核心任务为带领团队在行星“塔卫二”开拓未知区域，通过部署集成工业生产线与全自动建造设备，回收失落技术并探索废墟隐秘。需指挥专业人员操作源石发动机等设施，与佩丽卡等干员协作推进荒野开发，通过建立主基地枢纽区与次级野外基地实施系统性开拓。战斗中可自由编排四人作战小队，使用瞬击、刃击等技能进行战术支援，并通过扫描系统发现隐藏宝箱与解谜点位。日常工作涵盖工业设施规划、电力塔部署及传送带网络搭建，统筹资源实现规模化生产。\n\n**《明日方舟：终末地》**：上海鹰角网络科技有限公司开发的多平台3D角色扮演游戏。2022年3月16日发布先导预告PV并开启预约；2023年11月10日开启PC端技术测试；2025年1月17日及2025年4月分别开启PC端与移动端“再次测试”；2026年1月22日全球上线。该作延续《明日方舟》世界观，玩家将成为终末地工业的管理员，率领干员保卫、拓展人类边疆。\n\n### 项目简介：B站评论自动回复机器人 (Janson20/BiliCommentBot)\n使用DeepSeek API自动回复B站视频评论的Python机器人，支持Docker轻量部署（内存占用仅50-100MB）和完整的Web UI管理界面。核心功能：自动监控指定B站账号下视频的新增评论，通过DeepSeek API生成智能回复并自动发布。支持仅回复特定视频、自动点赞评论、点赞用户视频等个性化配置。可通过浏览器完成所有配置和操作，包括扫码登录获取Cookie、配置API密钥、实时查看日志和历史记录等。具备Cookie自动刷新、智能频率控制、视频列表缓存等高级功能，确保稳定运行并避免被B站限制。\n\n### 现在时间\n2026年'
+
+[ollama]
+base_url = "http://127.0.0.1:11434"
+model = "qwen2.5:7b"
+timeout_secs = 60
+
+[reply]
+enabled = true
+prefix = "🤖 "
+only_new = true
+max_process = 200
+reply_delay = 1
+like_enabled = true
+context_comments_count = 12
+only_bvid = ""
+like_user_video_enabled = true
+like_user_video_only_followers = false
+chained_reply_enabled = true
+max_reply_depth = 3
+dry_run = true
+
+[logging]
+level = "DEBUG"
+file = "logs/bot.log"
+console = true
+
+[auth]
+enabled = false
+password = ""
+
+[ai]
+provider = "deepseek"

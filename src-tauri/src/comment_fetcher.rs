@@ -55,7 +55,9 @@ pub async fn get_video_comments(
             .await
             .context("获取评论请求失败")?;
 
+        let status = resp.status();
         let text = resp.text().await.context("读取评论响应失败")?;
+        log::debug!("评论第{}页(ps={}) HTTP {} 响应长度={}", pn, page_size, status.as_u16(), text.len());
         let json: serde_json::Value =
             serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
 
@@ -92,6 +94,7 @@ pub async fn get_video_comments(
 
                     // 获取子评论
                     if chained_reply && max_reply_depth > 0 {
+                        log::debug!("获取评论 {} 的子评论...", main_id);
                         let children = get_replies_recursive(
                             client,
                             aid.clone(),
@@ -166,6 +169,7 @@ fn get_replies_recursive(
                 .await?;
 
             let text = resp.text().await?;
+            log::debug!("子评论 root={} pn={} depth={} 响应长度={}", root_id, pn, current_depth, text.len());
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
             if json["code"].as_i64().unwrap_or(-1) != 0 {

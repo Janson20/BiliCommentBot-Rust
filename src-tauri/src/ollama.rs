@@ -124,6 +124,8 @@ pub async fn generate_reply(
         },
     };
 
+    log::debug!("Ollama 请求: model={} timeout={}s", ollama_config.model, ollama_config.timeout_secs);
+
     let resp = client
         .post(format!("{}/api/chat", ollama_config.base_url))
         .json(&request_body)
