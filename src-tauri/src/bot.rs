@@ -233,29 +233,40 @@ async fn process_comments(
     video: &VideoInfo,
     comments: &[Comment],
 ) {
-    let csrf = {
-        let cm = state.cookie_manager.lock().await;
-        // 每次使用前从 live cookies 中实时提取 CSRF token
-        // 对标 Python 版: self.cookie_manager._get_csrf_from_cookie()
-        cm.get_csrf_from_cookie()
+    // 预览模式：跳过所有B站API相关校验，仅测试AI回复生成
+    let dry_run = {
+        let cfg = state.config.read().await;
+        cfg.reply.dry_run
     };
-    let csrf = match csrf {
-        Some(c) => c,
-        None => {
-            state.send_log("ERROR", "CSRF Token (bili_jct) 缺失，跳过评论处理。请确认 Cookie 包含 bili_jct 字段。");
-            return;
-        }
-    };
-
-    // 对标 Python: 回复前复验 Cookie 有效性，避免使用已过期 Cookie 发起回复
-    {
-        let cm = state.cookie_manager.lock().await;
-        let verify = cm.verify_cookie().await;
-        if !verify.valid {
-            state.send_log("ERROR", &format!("Cookie 无效，跳过评论处理: {}", verify.message));
-            return;
-        }
+    if dry_run {
+        state.send_log("INFO", "🔍 预览模式已开启 —— 仅生成AI回复，不会实际发表");
     }
+
+    // 非预览模式才需要 CSRF 和 Cookie 校验
+    let csrf = if !dry_run {
+        let cm = state.cookie_manager.lock().await;
+        let token = cm.get_csrf_from_cookie();
+        let token = match token {
+            Some(c) => c,
+            None => {
+                state.send_log("ERROR", "CSRF Token (bili_jct) 缺失，跳过评论处理。请确认 Cookie 包含 bili_jct 字段。");
+                return;
+            }
+        };
+
+        // 回复前复验 Cookie 有效性
+        {
+            let verify = cm.verify_cookie().await;
+            if !verify.valid {
+                state.send_log("ERROR", &format!("Cookie 无效，跳过评论处理: {}", verify.message));
+                return;
+            }
+        }
+
+        token
+    } else {
+        String::new() // dry_run 模式不需要
+    };
 
     let mut processed_count = 0u32;
     let max_process = config.reply.max_process;
@@ -265,6 +276,12 @@ async fn process_comments(
             break;
         }
 
+        // 预览模式重新读取实时配置（避免使用主循环顶部 clone 的旧快照）
+        let is_dry_run = {
+            let cfg = state.config.read().await;
+            cfg.reply.dry_run
+        };
+
         // 跳过已处理的评论
         {
             let history = state.history.lock().await;
@@ -273,8 +290,8 @@ async fn process_comments(
             }
         }
 
-        // 跳过本人评论
-        if comment.uid == config.bilibili.uid {
+        // 跳过本人评论（仅非预览模式）
+        if !is_dry_run && comment.uid == config.bilibili.uid {
             continue;
         }
 
@@ -326,7 +343,7 @@ async fn process_comments(
         };
 
         // 预览模式：仅日志输出生成的回复，不发表、不存历史
-        if config.reply.dry_run {
+        if is_dry_run {
             state.send_log(
                 "PREVIEW",
                 &format!(
@@ -355,7 +372,7 @@ async fn process_comments(
             parent_id,
         ).await
         {
-            Ok(true) => {
+            Ok(None) => {
                 state.send_log(
                     "INFO",
                     &format!("回复成功: {} → {}", comment.user, &full_reply[..full_reply.len().min(50)]),
@@ -412,8 +429,8 @@ async fn process_comments(
                     }
                 }
             }
-            Ok(false) => {
-                state.send_log("WARN", &format!("回复失败: {}", comment.user));
+            Ok(Some(ref msg)) => {
+                state.send_log("WARN", &format!("回复失败 [{}]: {}", comment.user, msg));
                 state.rate_limiter.record_failure();
             }
             Err(e) => {

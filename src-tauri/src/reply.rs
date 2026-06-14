@@ -12,6 +12,7 @@ use crate::http_client;
 ///
 /// - root_id: 根评论ID（楼中楼场景为根评论）
 /// - parent_id: 父评论ID（楼中楼场景为直接父评论）
+/// 返回：Ok(None) 成功，Ok(Some(错误信息)) B站拒绝，Err(_) 网络错误
 pub async fn reply_comment(
     client: &reqwest::Client,
     bvid_str: &str,
@@ -20,7 +21,7 @@ pub async fn reply_comment(
     csrf_token: &str,
     root_id: Option<&str>,
     parent_id: Option<&str>,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     let aid = bvid::bvid_to_aid(bvid_str)
         .ok_or_else(|| anyhow::anyhow!("无法转换BVID: {}", bvid_str))?;
 
@@ -50,11 +51,11 @@ pub async fn reply_comment(
     let code = json["code"].as_i64().unwrap_or(-1);
     if code == 0 {
         log::info!("回复评论 {} 成功", comment_id);
-        Ok(true)
+        Ok(None)
     } else {
-        let msg = json["message"].as_str().unwrap_or("未知错误");
+        let msg = json["message"].as_str().unwrap_or("未知错误").to_string();
         log::warn!("回复评论 {} 失败: code={} msg={}", comment_id, code, msg);
-        Ok(false)
+        Ok(Some(format!("code={} msg={}", code, msg)))
     }
 }
 
