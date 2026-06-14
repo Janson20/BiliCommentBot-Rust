@@ -117,6 +117,11 @@ pub async fn generate_reply(
         temperature: api_config.temperature,
     };
 
+    log::debug!(
+        "DeepSeek 请求: model={} max_tokens={} temp={} msg_count={}",
+        api_config.model, api_config.max_tokens, api_config.temperature, request_body.messages.len()
+    );
+
     let resp = client
         .post(format!("{}/chat/completions", api_config.base_url))
         .header("Authorization", format!("Bearer {}", api_key))
@@ -134,7 +139,7 @@ pub async fn generate_reply(
         return Err(anyhow::anyhow!(
             "DeepSeek API 错误 {}: {}",
             status.as_u16(),
-            &text[..text.len().min(200)]
+            &text.chars().take(200).collect::<String>()
         ));
     }
 

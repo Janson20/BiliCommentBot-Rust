@@ -45,7 +45,9 @@ pub async fn reply_comment(
         .await
         .context("回复评论请求失败")?;
 
+    let status = resp.status();
     let text = resp.text().await?;
+    log::debug!("回复评论 HTTP {} 响应长度={}", status.as_u16(), text.len());
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     let code = json["code"].as_i64().unwrap_or(-1);

@@ -111,10 +111,16 @@ async fn bot_main_loop(state: Arc<BotState>) {
 
     let mut reload_rx = state.reload_tx.subscribe();
 
+    let mut round = 0u64;
+
     loop {
         if state.shutdown.load(Ordering::Relaxed) {
+            state.send_log("INFO", "收到退出信号，主循环结束");
             break;
         }
+
+        round += 1;
+        state.send_log("DEBUG", &format!("==== 第 {} 轮检查开始 ====", round));
 
         // 检查配置热更新
         if let Ok(new_config) = reload_rx.try_recv() {
@@ -129,6 +135,11 @@ async fn bot_main_loop(state: Arc<BotState>) {
         }
 
         let config = state.config.read().await.clone();
+
+        state.send_log("DEBUG", &format!(
+            "当前配置: AI={:?}, reply_enabled={}, max_process={}, dry_run={}, check_interval={}s",
+            config.ai.provider, config.reply.enabled, config.reply.max_process, config.reply.dry_run, config.bilibili.check_interval
+        ));
 
         *state.last_check.lock().await = Some(
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -159,6 +170,7 @@ async fn bot_main_loop(state: Arc<BotState>) {
         {
             Ok(v) => {
                 let count = v.len();
+                state.send_log("INFO", &format!("获取到 {} 个视频", count));
                 let _ = state.event_tx.send(BotEvent::VideoList {
                     count,
                     videos: v.clone(),
@@ -171,22 +183,30 @@ async fn bot_main_loop(state: Arc<BotState>) {
             }
         };
 
+        let mut videos_checked = 0u32;
+
         for video in &videos {
             if state.shutdown.load(Ordering::Relaxed) {
                 return;
             }
 
+            videos_checked += 1;
+            state.send_log("INFO", &format!(
+                "==== [{}/{}] 检查视频: {} ({}) ====",
+                videos_checked, videos.len(), video.title, video.bvid
+            ));
+
             // 如果配置了 only_bvid，跳过非指定视频
             if !config.reply.only_bvid.is_empty()
                 && video.bvid != config.reply.only_bvid
             {
+                state.send_log("DEBUG", &format!("跳过视频 {}: 不在 only_bvid 范围内", video.bvid));
                 continue;
             }
 
-            state.send_log("DEBUG", &format!("检查视频: {} ({})", video.title, video.bvid));
-
             state.rate_limiter.wait();
 
+            state.send_log("DEBUG", &format!("请求评论: {} 页数上限={}", video.bvid, config.bilibili.max_comment_pages));
             match comment_fetcher::get_video_comments(
                 &http_client,
                 &video.bvid,
@@ -197,6 +217,8 @@ async fn bot_main_loop(state: Arc<BotState>) {
             .await
             {
                 Ok(comments) => {
+                    let total = comments.len();
+                    state.send_log("INFO", &format!("视频 {} 获取到 {} 条评论（含楼中楼）", video.bvid, total));
                     process_comments(&state, &http_client, &config, video, &comments).await;
                 }
                 Err(e) => {
@@ -212,7 +234,10 @@ async fn bot_main_loop(state: Arc<BotState>) {
             state.history.lock().await.total_replied(),
             state.rate_limiter.failure_count(),
         );
-        state.send_log("INFO", &format!("等待 {} 秒后进行下次检查", interval));
+        state.send_log("INFO", &format!(
+            "==== 第 {} 轮完成 等待 {} 秒 ====",
+            round, interval
+        ));
 
         for _ in 0..interval {
             if state.shutdown.load(Ordering::Relaxed) {
@@ -269,39 +294,94 @@ async fn process_comments(
     };
 
     let mut processed_count = 0u32;
+    let mut skipped_count = 0u32;
     let max_process = config.reply.max_process;
+    let total_comments = comments.len();
 
-    for comment in comments {
+    if total_comments == 0 {
+        state.send_log("INFO", "视频无评论，跳过");
+        return;
+    }
+
+    state.send_log("INFO", &format!(
+        "开始处理视频 {} 的 {} 条评论（max_process={} dry_run={}）",
+        video.bvid, total_comments, max_process, dry_run
+    ));
+    state.send_log("DEBUG", "进入评论循环...");
+
+    for (i, comment) in comments.iter().enumerate() {
+        state.send_log("DEBUG", &format!(
+            "  [{}/{}] 遍历: user={} content_preview=\"{}\" depth={}",
+            i+1, total_comments,
+            comment.user,
+            truncate_str(&comment.content, 30),
+            comment.depth
+        ));
+
         if state.shutdown.load(Ordering::Relaxed) || processed_count >= max_process {
+            if processed_count >= max_process {
+                state.send_log("INFO", "达到 max_process 上限，停止处理本视频");
+            }
             break;
         }
 
-        // 预览模式重新读取实时配置（避免使用主循环顶部 clone 的旧快照）
+        // 预览模式重新读取实时配置
         let is_dry_run = {
             let cfg = state.config.read().await;
             cfg.reply.dry_run
         };
+        state.send_log("DEBUG", &format!("  is_dry_run={}", is_dry_run));
+
+        let comment_idx = processed_count + skipped_count + 1;
 
         // 跳过已处理的评论
         {
             let history = state.history.lock().await;
             if history.is_processed(&comment.comment_id) {
+                skipped_count += 1;
+                state.send_log("INFO", &format!(
+                    "[{}/{}] ⏭ 跳过已处理: {}",
+                    comment_idx, total_comments, comment.user
+                ));
+                state.send_log("DEBUG", "  history 锁释放（continue）");
                 continue;
             }
+            state.send_log("DEBUG", "  comment 未处理，继续");
         }
 
         // 跳过本人评论（仅非预览模式）
+        state.send_log("DEBUG", &format!("  本人检查: is_dry_run={} comment_uid=\"{}\" config_uid=\"{}\"", is_dry_run, comment.uid, config.bilibili.uid));
         if !is_dry_run && comment.uid == config.bilibili.uid {
+            skipped_count += 1;
+            state.send_log("INFO", &format!(
+                "[{}/{}] ⏭ 跳过本人评论: {}", comment_idx, total_comments, comment.user
+            ));
             continue;
         }
 
+        state.send_log("INFO", &format!(
+            "[{}/{}] 处理评论: {} → \"{}\"",
+            comment_idx, total_comments,
+            comment.user,
+            truncate_str(&comment.content, 40)
+        ));
+
         // 频率控制等待
         state.rate_limiter.wait();
+        state.send_log("DEBUG", &format!("  频率等待完成, 连续失败={}", state.rate_limiter.failure_count()));
 
         // 收集上下文评论
         let context = collect_context(comments, comment, config.reply.context_comments_count);
+        if !context.is_empty() {
+            state.send_log("DEBUG", &format!("  附带 {} 条上下文评论", context.len()));
+        }
 
         // 生成 AI 回复
+        let ai_provider_name = match config.ai.provider {
+            AiProvider::Deepseek => "DeepSeek",
+            AiProvider::Ollama => "Ollama",
+        };
+        state.send_log("INFO", &format!("  => 调用 {} 生成回复...", ai_provider_name));
         let reply_text = match config.ai.provider {
             AiProvider::Deepseek => {
                 deepseek::generate_reply(
@@ -326,7 +406,10 @@ async fn process_comments(
         };
 
         let reply_text = match reply_text {
-            Ok(t) => t,
+            Ok(t) => {
+                state.send_log("DEBUG", &format!("  AI 原始回复: \"{}\"", truncate_str(&t, 80)));
+                t
+            }
             Err(e) => {
                 state.send_log("ERROR", &format!("AI回复生成失败: {}", e));
                 state.rate_limiter.record_failure();
@@ -349,7 +432,7 @@ async fn process_comments(
                 &format!(
                     "[DRY RUN] {} 的回复: {}",
                     comment.user,
-                    &full_reply[..full_reply.len().min(100)]
+                    truncate_str(&full_reply, 100)
                 ),
             );
             state.rate_limiter.record_success();
@@ -361,6 +444,14 @@ async fn process_comments(
         state.rate_limiter.wait();
         let root_id = comment.root_id.as_deref().or(Some(&comment.comment_id));
         let parent_id = comment.parent_id.as_deref().or(Some(&comment.comment_id));
+
+        state.send_log("DEBUG", &format!(
+            "  发表回复: bvid={} root={} parent={} content_len={}",
+            &video.bvid[..video.bvid.len().min(12)],
+            root_id.unwrap_or("?"),
+            parent_id.unwrap_or("?"),
+            full_reply.len()
+        ));
 
         match reply::reply_comment(
             client,
@@ -375,7 +466,7 @@ async fn process_comments(
             Ok(None) => {
                 state.send_log(
                     "INFO",
-                    &format!("回复成功: {} → {}", comment.user, &full_reply[..full_reply.len().min(50)]),
+                    &format!("回复成功: {} → {}", comment.user, truncate_str(&full_reply, 50)),
                 );
 
                 // 保存到历史
@@ -447,6 +538,19 @@ async fn process_comments(
             .await;
         }
     }
+
+    // 视频处理完毕，输出汇总日志
+    if dry_run {
+        state.send_log("INFO", &format!(
+            "==== 视频 {} 预览完成: 处理 {} 条, 跳过 {} 条 ====",
+            video.bvid, processed_count, skipped_count
+        ));
+    } else {
+        state.send_log("INFO", &format!(
+            "==== 视频 {} 处理完成: 回复 {} 条, 跳过 {} 条 ====",
+            video.bvid, processed_count, skipped_count
+        ));
+    }
 }
 
 /// 收集评论的上下文评论
@@ -465,4 +569,9 @@ fn collect_context(
         .take(max_count as usize)
         .cloned()
         .collect()
+}
+
+/// 安全截断字符串到 max_chars 个字符（UTF-8 边界安全，中文友好）
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }

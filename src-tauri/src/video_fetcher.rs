@@ -79,7 +79,9 @@ pub async fn get_video_list(
             .await
             .context("获取视频列表请求失败")?;
 
+        let status = resp.status();
         let text = resp.text().await.context("读取视频列表响应失败")?;
+        log::debug!("视频列表第{}页 HTTP {} 响应长度={}", pn, status.as_u16(), text.len());
         let json: serde_json::Value =
             serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
 
