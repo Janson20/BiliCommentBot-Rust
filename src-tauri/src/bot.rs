@@ -325,6 +325,21 @@ async fn process_comments(
             format!("{}{}", prefix, reply_text)
         };
 
+        // 预览模式：仅日志输出生成的回复，不发表、不存历史
+        if config.reply.dry_run {
+            state.send_log(
+                "PREVIEW",
+                &format!(
+                    "[DRY RUN] {} 的回复: {}",
+                    comment.user,
+                    &full_reply[..full_reply.len().min(100)]
+                ),
+            );
+            state.rate_limiter.record_success();
+            processed_count += 1;
+            continue;
+        }
+
         // 发送回复
         state.rate_limiter.wait();
         let root_id = comment.root_id.as_deref().or(Some(&comment.comment_id));

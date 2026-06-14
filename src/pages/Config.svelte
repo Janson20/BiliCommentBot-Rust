@@ -113,6 +113,8 @@
         <h2>回复设置</h2>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply, "enabled")}
           on:change={(e) => setField(cfg.reply, "enabled", e.target.checked)} /> 启用自动回复</label>
+        <label class="checkbox dry"><input type="checkbox" checked={boolField(cfg.reply, "dry_run")}
+          on:change={(e) => setField(cfg.reply, "dry_run", e.target.checked)} /> 🔍 预览模式：仅生成AI回复日志，不实际发表</label>
         <div class="field"><label>回复前缀</label><input type="text" value={field(cfg.reply, "prefix")}
           on:input={(e) => setField(cfg.reply, "prefix", e.target.value)} /></div>
         <div class="field"><label>每次最多处理</label><input type="number" value={numField(cfg.reply, "max_process")}
@@ -207,10 +209,8 @@
   }
   .field textarea { resize: vertical; }
   .field input:focus, .field textarea:focus, .field select:focus { border-color: #00b4d8; }
-  .checkbox {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
-    font-size: 0.85rem; color: #c0d0e0; cursor: pointer;
-  }
+  .checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 0.85rem; color: #c0d0e0; cursor: pointer; }
+  .checkbox.dry { color: #f0c060; border-left: 3px solid #f0c060; padding-left: 10px; }
   .checkbox input { width: auto; accent-color: #00b4d8; }
   .save-area { margin-top: 20px; }
   .btn-save {

@@ -173,6 +173,9 @@ pub struct ReplyConfig {
     pub chained_reply_enabled: bool,
     #[serde(default = "default_max_reply_depth")]
     pub max_reply_depth: u32,
+    /// 预览模式：走完整流程生成AI回复并记录日志，但不实际发表、不存历史
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 impl Default for ReplyConfig {
@@ -190,6 +193,7 @@ impl Default for ReplyConfig {
             like_user_video_only_followers: false,
             chained_reply_enabled: true,
             max_reply_depth: default_max_reply_depth(),
+            dry_run: false,
         }
     }
 }
