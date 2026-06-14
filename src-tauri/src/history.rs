@@ -530,10 +530,11 @@ mod tests {
 
         let groups = hm.query_grouped();
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].0, "BV_B");
-        assert_eq!(groups[0].2.len(), 1);
-        assert_eq!(groups[1].0, "BV_A");
-        assert_eq!(groups[1].2.len(), 2);
+        // c3(BV_A) reply_time=300 最大，BV_A 先出现
+        assert_eq!(groups[0].0, "BV_A");
+        assert_eq!(groups[0].2.len(), 2);
+        assert_eq!(groups[1].0, "BV_B");
+        assert_eq!(groups[1].2.len(), 1);
 
         let _ = std::fs::remove_file(&tmp);
     }

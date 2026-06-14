@@ -147,3 +147,50 @@ pub async fn generate_reply(
         .map(|c| c.message.content.trim().to_string())
         .ok_or_else(|| anyhow::anyhow!("DeepSeek 返回空回复"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_api_key() {
+        assert_eq!(normalize_api_key("sk-abc"), "sk-abc");
+        assert_eq!(normalize_api_key("  sk-abc "), "sk-abc");
+        assert_eq!(normalize_api_key("abc123"), "sk-abc123");
+        assert_eq!(normalize_api_key(""), "");
+        assert_eq!(normalize_api_key("   "), "");
+    }
+
+    /// 真实 API 测试——需要有网络和有效 Key
+    /// 运行时设置环境变量 DEEPSEEK_API_KEY=sk-xxx
+    /// cargo test deepseek_generate -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn test_generate_reply_live() {
+        let api_key = std::env::var("DEEPSEEK_API_KEY")
+            .expect("请设置环境变量 DEEPSEEK_API_KEY=sk-xxx");
+        let client = reqwest::Client::new();
+        let cfg = DeepseekConfig {
+            api_key,
+            ..Default::default()
+        };
+
+        let result = generate_reply(
+            &client,
+            &cfg,
+            "这个户型公摊好大啊，120平实际才90出头，还不如我家的老破小",
+            &[],
+            Some("看房日记：120平三房两卫实地测评"),
+            Some("今天带大家看一套120平米的三房两卫，实地测量套内面积只有90出头..."),
+        )
+        .await;
+
+        match &result {
+            Ok(reply) => println!("\n=== AI 回复 ===\n{}\n", reply),
+            Err(e) => eprintln!("\n=== 失败 ===\n{}\n", e),
+        }
+        assert!(result.is_ok(), "DeepSeek API 调用失败");
+        let reply = result.unwrap();
+        assert!(!reply.is_empty(), "回复不应为空");
+    }
+}
