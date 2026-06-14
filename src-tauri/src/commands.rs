@@ -423,6 +423,90 @@ fn build_children_json(
         .into()
 }
 
+/// 按顶级评论日期分组的历史记录（日期折叠 + 树状结构）
+#[tauri::command]
+pub async fn get_history_by_date(
+    bot_state: State<'_, Arc<BotState>>,
+) -> Result<serde_json::Value, String> {
+    let history = bot_state.history.lock().await;
+    let entries = history.query_all_flat();
+
+    let roots: Vec<&HistoryEntry> = entries
+        .iter()
+        .filter(|e| e.depth == 0 || e.parent_id.is_none())
+        .collect();
+
+    // 构建子评论映射
+    let root_children_map: std::collections::HashMap<&str, Vec<&HistoryEntry>> = entries
+        .iter()
+        .filter(|e| e.parent_id.is_some())
+        .fold(std::collections::HashMap::new(), |mut acc, e| {
+            acc.entry(e.parent_id.as_deref().unwrap())
+                .or_default()
+                .push(e);
+            acc
+        });
+
+    // 收集 orphans（不在 root_children_map 中的非根评论）
+    let orphans: Vec<&HistoryEntry> = entries
+        .iter()
+        .filter(|e| {
+            (e.depth > 0 && e.parent_id.is_some())
+                && !root_children_map.contains_key(e.comment_id.as_str())
+        })
+        .collect();
+
+    // 按日期分组（从 timestamp "2026-06-13 08:38:22" 提取 "2026-06-13"）
+    let mut date_groups: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+        std::collections::BTreeMap::new();
+
+    for root in &roots {
+        let date = root.timestamp.chars().take(10).collect::<String>();
+        let children = build_children_json(&root.comment_id, &root_children_map, &entries);
+        date_groups.entry(date).or_default().push(serde_json::json!({
+            "comment_id": root.comment_id,
+            "user": root.user,
+            "content": root.content,
+            "reply_content": root.reply_content,
+            "timestamp": root.timestamp,
+            "depth": root.depth,
+            "video_title": root.video_title,
+            "bvid": root.bvid,
+            "children": children,
+        }));
+    }
+
+    // orphans 也按日期分配
+    for orphan in &orphans {
+        let date = orphan.timestamp.chars().take(10).collect::<String>();
+        date_groups.entry(date).or_default().push(serde_json::json!({
+            "comment_id": orphan.comment_id,
+            "user": orphan.user,
+            "content": orphan.content,
+            "reply_content": orphan.reply_content,
+            "timestamp": orphan.timestamp,
+            "depth": orphan.depth,
+            "video_title": orphan.video_title,
+            "bvid": orphan.bvid,
+            "children": [],
+        }));
+    }
+
+    let groups: Vec<serde_json::Value> = date_groups
+        .into_iter()
+        .rev() // 最新日期在前
+        .map(|(date, comments)| {
+            serde_json::json!({
+                "date": date,
+                "comment_count": comments.len(),
+                "comments": comments,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!(groups))
+}
+
 #[tauri::command]
 pub async fn clear_history(
     bot_state: State<'_, Arc<BotState>>,

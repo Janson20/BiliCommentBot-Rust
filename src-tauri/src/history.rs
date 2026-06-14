@@ -374,6 +374,42 @@ impl HistoryManager {
         groups
     }
 
+    /// Query all entries flat, ordered by reply_time DESC (for date-based grouping)
+    pub fn query_all_flat(&self) -> Vec<HistoryEntry> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT comment_id, bvid, video_title, content, user, uid,
+                            time, reply_time, reply_content, timestamp,
+                            parent_id, root_id, depth
+                     FROM history
+                     ORDER BY reply_time DESC",
+                )
+                .unwrap();
+
+            stmt.query_map([], |row| {
+                Ok(HistoryEntry {
+                    comment_id: row.get(0)?,
+                    bvid: row.get(1)?,
+                    video_title: row.get(2)?,
+                    content: row.get(3)?,
+                    user: row.get(4)?,
+                    uid: row.get(5)?,
+                    time: row.get(6)?,
+                    reply_time: row.get(7)?,
+                    reply_content: row.get(8)?,
+                    timestamp: row.get(9)?,
+                    parent_id: row.get(10)?,
+                    root_id: row.get(11)?,
+                    depth: row.get(12)?,
+                })
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+        })
+    }
+
     // ── Delete ──
 
     pub fn clear(&self) {

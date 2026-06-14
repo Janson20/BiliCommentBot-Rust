@@ -27,6 +27,7 @@ export const triggerManualCheck = () => invoke("trigger_manual_check");
 export const getHistory = (page, pageSize) =>
   invoke("get_history", { page, pageSize });
 export const getHistoryGrouped = () => invoke("get_history_grouped");
+export const getHistoryByDate = () => invoke("get_history_by_date");
 export const clearHistory = () => invoke("clear_history");
 
 // ── Ollama ──

@@ -131,6 +131,7 @@ fn main() {
             commands::trigger_manual_check,
             commands::get_history,
             commands::get_history_grouped,
+            commands::get_history_by_date,
             commands::clear_history,
             commands::check_ollama_availability,
             commands::list_ollama_models,

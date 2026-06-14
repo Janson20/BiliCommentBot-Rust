@@ -9,6 +9,11 @@
   <div class="comment-meta">
     <span class="comment-user">{comment.user}</span>
     <span class="comment-time">{comment.timestamp}</span>
+    {#if comment.video_title || comment.bvid}
+      <span class="video-tag" title={comment.video_title || comment.bvid}>
+        {comment.video_title || comment.bvid}
+      </span>
+    {/if}
     {#if depth > 0}
       <span class="depth-badge">L{depth}</span>
     {/if}
@@ -35,6 +40,11 @@
   }
   .comment-user { color: #00b4d8; font-size: 0.82rem; font-weight: 600; }
   .comment-time { color: #5a7a9a; font-size: 0.72rem; }
+  .video-tag {
+    font-size: 0.68rem; color: #8aa0b8; background: #0d1b2a;
+    padding: 1px 8px; border-radius: 4px; max-width: 180px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .depth-badge {
     font-size: 0.65rem; background: #1e3a5f; color: #8aa0b8;
     padding: 1px 6px; border-radius: 8px;

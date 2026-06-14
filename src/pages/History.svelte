@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { getHistoryGrouped, clearHistory } from "../lib/api.js";
+  import { getHistoryByDate, clearHistory } from "../lib/api.js";
   import { showToast } from "../lib/stores.js";
   import CommentNode from "../components/CommentNode.svelte";
 
@@ -13,15 +13,15 @@
   async function loadHistory() {
     loading = true;
     try {
-      groups = await getHistoryGrouped();
+      groups = await getHistoryByDate();
     } catch (e) {
       showToast("error", "加载失败: " + e);
     }
     loading = false;
   }
 
-  function toggle(bvid) {
-    expanded[bvid] = !expanded[bvid];
+  function toggle(date) {
+    expanded[date] = !expanded[date];
     expanded = expanded;
   }
 
@@ -40,26 +40,23 @@
 <h1>📋 回复历史</h1>
 
 <div class="toolbar">
-  <span class="total">{loading ? "加载中..." : `共 ${groups.length} 个视频`}</span>
+  <span class="total">{loading ? "加载中..." : `共 ${groups.length} 天`}</span>
   <button class="btn-refresh" on:click={loadHistory}>🔄 刷新</button>
   <button class="btn-danger" on:click={doClear}>🗑 清除历史</button>
 </div>
 
 <div class="cards">
-  {#each groups as group (group.bvid)}
-    <div class="card" class:expanded={expanded[group.bvid]}>
-      <button class="card-header" on:click={() => toggle(group.bvid)}>
-        <span class="chevron">{expanded[group.bvid] ? "▼" : "▶"}</span>
+  {#each groups as group (group.date)}
+    <div class="card" class:expanded={expanded[group.date]}>
+      <button class="card-header" on:click={() => toggle(group.date)}>
+        <span class="chevron">{expanded[group.date] ? "▼" : "▶"}</span>
         <div class="card-info">
-          <span class="card-title">{group.video_title || group.bvid}</span>
-          <span class="card-meta">
-            {group.reply_count} 条回复
-            {#if group.last_reply_time} · {group.last_reply_time}{/if}
-          </span>
+          <span class="card-title">{group.date}</span>
+          <span class="card-meta">{group.comment_count} 条根评论</span>
         </div>
       </button>
 
-      {#if expanded[group.bvid]}
+      {#if expanded[group.date]}
         <div class="card-body">
           {#each group.comments as comment}
             <CommentNode {comment} depth={0} />
@@ -104,7 +101,6 @@
   .card-info { flex: 1; min-width: 0; }
   .card-title {
     font-weight: 600; color: #e0e8f0; display: block;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .card-meta { font-size: 0.75rem; color: #5a7a9a; margin-top: 2px; display: block; }
   .card-body {
