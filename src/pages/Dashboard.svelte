@@ -1,6 +1,6 @@
 <script>
   import { isRunning, botStats, logs } from "../lib/stores.js";
-  import { startBot, stopBot, getBotStatus, getVideoList } from "../lib/api.js";
+  import { startBot, stopBot, getVideoList, triggerManualCheck } from "../lib/api.js";
 
   let loading = false;
 
@@ -21,6 +21,14 @@
   async function refreshVideos() {
     try {
       await getVideoList();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function manualCheck() {
+    try {
+      await triggerManualCheck();
     } catch (e) {
       console.error(e);
     }
@@ -68,6 +76,7 @@
     {loading ? "..." : $isRunning ? "⏹ 停止" : "▶ 启动"}
   </button>
   <button class="btn-secondary" on:click={refreshVideos}>🔄 刷新视频列表</button>
+  <button class="btn-secondary" on:click={manualCheck} disabled={!$isRunning}>⚡ 立即检查</button>
 </div>
 
 <div class="section">

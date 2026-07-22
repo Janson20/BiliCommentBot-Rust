@@ -17,11 +17,11 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 - 👥 仅给关注了你的用户视频点赞（可选）
 - 🧹 **评论过滤**：关键词黑白名单、评论长度、用户 UID 黑白名单三重过滤，精准控制回复范围
 - 🌐 **新手教程向导**：首次启动 5 步分步引导 — B站登录 → AI引擎 → 回复设置 → 安全设置 → 完成，也支持一键导入 Python 版所有配置和历史
-- 📊 实时仪表盘：运行状态、已回复统计、最近日志
+- 📊 实时仪表盘：运行状态、已回复统计、最近日志，支持「立即检查」手动触发一轮评论扫描
 - ⚙️ **配置热更新**：修改后立即生效无需重启
 - 📜 实时日志查看 + 分级别过滤 + 搜索 + 导出
 - 📋 回复历史记录查看 + 分页 + 清除（SQLite 存储，首次自动迁移旧 JSON 数据）
-- 🔒 登录密码保护（bcrypt 哈希，兼容旧版 SHA-256 自动升级）
+- 🔒 登录密码保护（启动锁屏，bcrypt 哈希，兼容旧版 SHA-256 自动升级）
 - 🗑️ **一键清空**：将配置、历史、Cookie、日志等所有数据移入回收站（需输入确认文字）
 - 🐳 体积轻量：前端 ~25KB gzipped，Rust 后端无运行时
 
@@ -130,8 +130,7 @@ BiliCommentBot-RS/
 │   │   ├── cookie.rs       # Cookie 扫码/刷新/验证
 │   │   ├── app_sign.rs     # BiliDroid 签名算法
 │   │   ├── bvid.rs         # BVID ↔ AID 转换
-│   │   ├── http_client.rs  # UA/Referer 轮换
-│   │   ├── decompress.rs   # gzip/zlib 解压
+│   │   ├── http_client.rs  # UA 轮换 + APP 参数
 │   │   ├── rate_limiter.rs # 指数退避频率控制
 │   │   ├── video_fetcher.rs # 视频列表获取
 │   │   ├── comment_fetcher.rs # 评论+楼中楼获取
@@ -215,6 +214,10 @@ provider = "deepseek"  # "deepseek" 或 "ollama"
 
 ## 更新记录
 
+- **新增「立即检查」**：仪表盘新增按钮，机器人运行时可手动触发立即开始下一轮评论扫描，无需等待检查间隔（`trigger_manual_check` 命令此前为空壳，现已真正生效）。
+- **密码保护生效**：启用访问密码后，应用启动时弹出锁屏验证（此前密码可设置但从不校验，现已实际拦截，`verify_password` 命令接入启动流程）。
+- **启动状态同步**：启动时主动拉取机器人运行状态，修复事件未到达时仪表盘显示陈旧"已停止"的问题（`get_bot_status` 接入启动流程）。
+- **死代码清理**：移除从未采用的 `HttpClient` 抽象层、未被调用的 `decompress` 解压模块（及 `flate2` 依赖）、冗余的 `CookieManager::new` 构造器与 `BotEvent::History` 事件变体；`is_valid_bvid` 复用进 `bvid_to_aid` 输入校验；删除前端从未调用的 `getHistory` / `getHistoryGrouped` 包装函数。
 - **新增评论过滤器**：从 Python 版同步移植关键词黑白名单、评论长度、用户 UID 黑白名单三重过滤。可在「配置 → 回复」标签页分别开关，命中过滤规则的评论将被跳过，不进入 AI 生成与回复流程。
 - **修复回复评论失败**：回复/点赞请求未携带会话 Cookie（`SESSDATA`），导致 B站判定未登录而拒绝。现已将完整 Cookie 头及 `Origin`/`Referer` 一并附加到 Web API 请求，确保鉴权通过。
 - **修复配置编辑不能立即生效**：`save_config` 现即时写入运行时配置（`bot_state.config`），使 `get_video_list`、`check_ollama_availability` 等命令立即返回新值；主循环排空所有待处理更新并只应用最新一条，且 `check_interval` 等待可被配置更新提前打断，新配置无需等到下一轮才生效。

@@ -9,7 +9,7 @@ const _BV_TABLE: &str = "FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9Rd
 
 /// BVID → AID（作为字符串返回，B站 API 接受字符串形式的 aid）
 pub fn bvid_to_aid(bvid: &str) -> Option<String> {
-    if !bvid.starts_with("BV") || bvid.len() < 6 {
+    if !is_valid_bvid(bvid) {
         return None;
     }
     // 取 BV 后的字符（长度可变，通常为 9-10 位）

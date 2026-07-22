@@ -301,7 +301,10 @@ pub async fn trigger_manual_check(
     if !bot_state.running.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("请先启动机器人".into());
     }
-    bot_state.send_log("INFO", "手动触发评论检查");
+    bot_state
+        .manual_trigger
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    bot_state.send_log("INFO", "手动触发评论检查，将在当前等待结束后立即执行");
     Ok("已触发".into())
 }
 
