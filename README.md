@@ -202,6 +202,13 @@ provider = "deepseek"  # "deepseek" 或 "ollama"
 
 ---
 
+## 更新记录
+
+- **修复回复评论失败**：回复/点赞请求未携带会话 Cookie（`SESSDATA`），导致 B站判定未登录而拒绝。现已将完整 Cookie 头及 `Origin`/`Referer` 一并附加到 Web API 请求，确保鉴权通过。
+- **修复配置编辑不能立即生效**：`save_config` 现即时写入运行时配置（`bot_state.config`），使 `get_video_list`、`check_ollama_availability` 等命令立即返回新值；主循环排空所有待处理更新并只应用最新一条，且 `check_interval` 等待可被配置更新提前打断，新配置无需等到下一轮才生效。
+
+---
+
 ## License
 
 MIT
