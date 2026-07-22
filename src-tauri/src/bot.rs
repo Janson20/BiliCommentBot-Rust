@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 use crate::comment_fetcher::{self, Comment};
-use crate::config::{AiProvider, RawConfig};
+use crate::config::{AiProvider, KeywordFilterConfig, LengthFilterConfig, RawConfig, UserFilterConfig};
 use crate::cookie::CookieManager;
 use crate::deepseek;
 use crate::history::HistoryManager;
@@ -378,6 +378,13 @@ async fn process_comments(
             continue;
         }
 
+        // 应用过滤器（关键词、长度、用户黑白名单）
+        if let Some(reason) = check_filters(&config.reply, comment) {
+            skipped_count += 1;
+            state.send_log("DEBUG", &format!("跳过评论 {}: {}", comment.comment_id, reason));
+            continue;
+        }
+
         state.send_log("INFO", &format!(
             "[{}/{}] 处理评论: {} → \"{}\"",
             comment_idx, total_comments,
@@ -589,6 +596,123 @@ fn collect_context(
         .take(max_count as usize)
         .cloned()
         .collect()
+}
+
+/// 检查评论是否通过所有过滤器。返回 Some(原因) 表示未通过应跳过
+/// 对标 Python 版 BiliCommentBot._check_filters
+fn check_filters(
+    reply_cfg: &crate::config::ReplyConfig,
+    comment: &Comment,
+) -> Option<String> {
+    // ── 长度过滤 ──
+    if let Some(reason) = check_length_filter(&reply_cfg.length_filter, comment) {
+        return Some(reason);
+    }
+    // ── 关键词过滤 ──
+    if let Some(reason) = check_keyword_filter(&reply_cfg.keyword_filter, comment) {
+        return Some(reason);
+    }
+    // ── 用户过滤 ──
+    if let Some(reason) = check_user_filter(&reply_cfg.user_filter, comment) {
+        return Some(reason);
+    }
+    None
+}
+
+/// 长度过滤
+fn check_length_filter(lf: &LengthFilterConfig, comment: &Comment) -> Option<String> {
+    if !lf.enabled {
+        return None;
+    }
+    let content_len = comment.content.chars().count() as u32;
+    if lf.min_length > 0 && content_len < lf.min_length {
+        return Some(format!("评论长度 {} < {}", content_len, lf.min_length));
+    }
+    if lf.max_length > 0 && content_len > lf.max_length {
+        return Some(format!("评论长度 {} > {}", content_len, lf.max_length));
+    }
+    None
+}
+
+/// 关键词过滤
+fn check_keyword_filter(kf: &KeywordFilterConfig, comment: &Comment) -> Option<String> {
+    if !kf.enabled {
+        return None;
+    }
+    let bl_str = kf.blacklist.trim();
+    let wl_str = kf.whitelist.trim();
+    let match_case = kf.match_case;
+
+    let content = if match_case {
+        comment.content.clone()
+    } else {
+        comment.content.to_lowercase()
+    };
+
+    // 黑名单：命中任一即跳过
+    if !bl_str.is_empty() {
+        let keywords = split_keywords(bl_str, match_case);
+        for kw in &keywords {
+            if content.contains(kw) {
+                return Some(format!("命中黑名单关键词: {}", kw));
+            }
+        }
+    }
+
+    // 白名单：根据 mode 决定匹配方式
+    if !wl_str.is_empty() {
+        let keywords = split_keywords(wl_str, match_case);
+        let mode = kf.mode.trim().to_lowercase();
+        if mode == "all" {
+            if !keywords.iter().all(|kw| content.contains(kw)) {
+                return Some("未包含所有白名单关键词".to_string());
+            }
+        } else {
+            if !keywords.iter().any(|kw| content.contains(kw)) {
+                return Some("未包含任何白名单关键词".to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// 拆分逗号分隔的关键词，并按 match_case 决定是否转小写
+fn split_keywords(raw: &str, match_case: bool) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| if match_case { s } else { s.to_lowercase() })
+        .collect()
+}
+
+/// 用户过滤
+fn check_user_filter(uf: &UserFilterConfig, comment: &Comment) -> Option<String> {
+    if !uf.enabled {
+        return None;
+    }
+    let uid = &comment.uid;
+
+    let bl_str = uf.blacklist.trim();
+    let wl_str = uf.whitelist.trim();
+
+    // 黑名单
+    if !bl_str.is_empty() {
+        let blacklist: Vec<&str> = bl_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if blacklist.iter().any(|u| u == uid) {
+            return Some(format!("用户 {} 在黑名单中", uid));
+        }
+    }
+
+    // 白名单
+    if !wl_str.is_empty() {
+        let whitelist: Vec<&str> = wl_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        if !whitelist.iter().any(|u| u == uid) {
+            return Some(format!("用户 {} 不在白名单中", uid));
+        }
+    }
+
+    None
 }
 
 /// 安全截断字符串到 max_chars 个字符（UTF-8 边界安全，中文友好）

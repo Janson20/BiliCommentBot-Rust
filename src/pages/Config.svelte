@@ -30,6 +30,14 @@
   function numField(cfgObj, key) {
     return Number(cfgObj?.[key]) || 0;
   }
+  // 确保嵌套对象存在（如 cfg.reply.keyword_filter），不存在则创建并返回
+  function ensureObj(parentObj, key) {
+    if (!parentObj) return null;
+    if (!parentObj[key] || typeof parentObj[key] !== "object") {
+      parentObj[key] = {};
+    }
+    return parentObj[key];
+  }
 
   async function handleSave() {
     try {
@@ -138,6 +146,38 @@
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply, "like_user_video_only_followers")}
           on:change={(e) => setField(cfg.reply, "like_user_video_only_followers", e.target.checked)} /> 仅点赞粉丝视频</label>
 
+        <h3 class="sub-title">关键词过滤</h3>
+        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.keyword_filter, "enabled")}
+          on:change={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "enabled", e.target.checked)} /> 启用关键词过滤</label>
+        <div class="field"><label>白名单关键词 <span class="hint">（逗号分隔，匹配才回复；留空不限制）</span></label><input type="text" value={field(cfg.reply?.keyword_filter, "whitelist")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "whitelist", e.target.value)} /></div>
+        <div class="field"><label>黑名单关键词 <span class="hint">（逗号分隔，匹配任一则跳过）</span></label><input type="text" value={field(cfg.reply?.keyword_filter, "blacklist")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "blacklist", e.target.value)} /></div>
+        <div class="field"><label>白名单匹配模式</label>
+          <select value={field(cfg.reply?.keyword_filter, "mode") || "any"}
+            on:change={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "mode", e.target.value)}>
+            <option value="any">any（任一匹配）</option>
+            <option value="all">all（全部匹配）</option>
+          </select></div>
+        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.keyword_filter, "match_case")}
+          on:change={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "match_case", e.target.checked)} /> 区分大小写</label>
+
+        <h3 class="sub-title">评论长度过滤</h3>
+        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.length_filter, "enabled")}
+          on:change={(e) => setField(ensureObj(cfg.reply, "length_filter"), "enabled", e.target.checked)} /> 启用长度过滤</label>
+        <div class="field"><label>最短长度 <span class="hint">（0=不限制）</span></label><input type="number" value={numField(cfg.reply?.length_filter, "min_length")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "length_filter"), "min_length", Number(e.target.value))} /></div>
+        <div class="field"><label>最长长度 <span class="hint">（0=不限制）</span></label><input type="number" value={numField(cfg.reply?.length_filter, "max_length")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "length_filter"), "max_length", Number(e.target.value))} /></div>
+
+        <h3 class="sub-title">用户过滤</h3>
+        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.user_filter, "enabled")}
+          on:change={(e) => setField(ensureObj(cfg.reply, "user_filter"), "enabled", e.target.checked)} /> 启用用户过滤</label>
+        <div class="field"><label>白名单 UID <span class="hint">（逗号分隔，仅回复这些用户）</span></label><input type="text" value={field(cfg.reply?.user_filter, "whitelist")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "user_filter"), "whitelist", e.target.value)} /></div>
+        <div class="field"><label>黑名单 UID <span class="hint">（逗号分隔，屏蔽这些用户）</span></label><input type="text" value={field(cfg.reply?.user_filter, "blacklist")}
+          on:input={(e) => setField(ensureObj(cfg.reply, "user_filter"), "blacklist", e.target.value)} /></div>
+
       {:else if activeTab === "rate_limit"}
         <h2>频率控制</h2>
         <div class="field"><label>最小请求间隔（秒）</label><input type="number" step="0.5" value={field(cfg.rate_limit, "min_request_interval")}
@@ -192,6 +232,7 @@
 <style>
   h1 { font-size: 1.5rem; color: #00b4d8; margin-bottom: 16px; }
   h2 { font-size: 1.05rem; color: #8aa0b8; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #1e3a5f; }
+  .sub-title { font-size: 0.88rem; color: #00b4d8; margin: 16px 0 10px; padding-top: 8px; border-top: 1px dashed #1e3a5f; }
   .tabs { display: flex; gap: 2px; margin-bottom: 18px; flex-wrap: wrap; }
   .tab {
     padding: 6px 14px; border: 1px solid #1e3a5f; background: #0d1b2a;
