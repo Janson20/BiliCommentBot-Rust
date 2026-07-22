@@ -218,7 +218,6 @@ dependencies = [
  "bcrypt",
  "chrono",
  "env_logger",
- "flate2",
  "image 0.25.10",
  "log",
  "md5",

@@ -8,7 +8,6 @@ mod commands;
 mod comment_fetcher;
 mod config;
 mod cookie;
-mod decompress;
 mod deepseek;
 mod history;
 mod http_client;
@@ -89,6 +88,7 @@ fn main() {
                 event_tx: event_tx.clone(),
                 reload_tx,
                 shutdown: AtomicBool::new(false),
+                manual_trigger: AtomicBool::new(false),
                 rate_limiter,
             });
 

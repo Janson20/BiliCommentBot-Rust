@@ -101,25 +101,6 @@ impl CookieManager {
         }
     }
 
-    /// 使用传入的 reqwest::Client + cookie/refresh_token 构建
-    pub async fn new(
-        client: reqwest::Client,
-        cookie_str: &str,
-        refresh_token: &str,
-    ) -> Self {
-        let mut mgr = Self {
-            client,
-            cookies: HashMap::new(),
-            refresh_token: refresh_token.to_string(),
-            csrf_token: None,
-        };
-        if !cookie_str.is_empty() {
-            mgr.set_cookie_from_str(cookie_str);
-        }
-        mgr.csrf_token = mgr.get_csrf_from_cookie();
-        mgr
-    }
-
     // ════════════════════════════════════════════════════════════
     //  Cookie 解析
     // ════════════════════════════════════════════════════════════

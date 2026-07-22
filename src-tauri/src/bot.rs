@@ -42,8 +42,6 @@ pub enum BotEvent {
     Log(LogEntry),
     #[serde(rename = "stats")]
     Stats(BotStats),
-    #[serde(rename = "history")]
-    History(crate::history::HistoryEntry),
     #[serde(rename = "video_list")]
     VideoList { count: usize, videos: Vec<VideoInfo> },
     #[serde(rename = "status")]
@@ -62,6 +60,8 @@ pub struct BotState {
     /// 通知主循环热更新配置
     pub reload_tx: broadcast::Sender<RawConfig>,
     pub shutdown: AtomicBool,
+    /// 手动触发下一轮检查的信号
+    pub manual_trigger: AtomicBool,
     pub rate_limiter: RateLimiter,
 }
 
@@ -254,6 +254,10 @@ async fn bot_main_loop(state: Arc<BotState>) {
         for _ in 0..interval {
             if state.shutdown.load(Ordering::Relaxed) {
                 return;
+            }
+            if state.manual_trigger.swap(false, Ordering::Relaxed) {
+                state.send_log("INFO", "收到手动触发，立即开始下一轮检查");
+                break;
             }
             // 配置更新时立即打断等待，使新配置（如 check_interval）即时生效；
             // 消息仍留在通道中，由下一轮顶部排空并应用
