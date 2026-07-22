@@ -12,6 +12,7 @@ use crate::http_client;
 ///
 /// - root_id: 根评论ID（楼中楼场景为根评论）
 /// - parent_id: 父评论ID（楼中楼场景为直接父评论）
+/// - cookie_str: 完整 Cookie 字符串（必须含 SESSDATA 等会话凭证）
 /// 返回：Ok(None) 成功，Ok(Some(错误信息)) B站拒绝，Err(_) 网络错误
 pub async fn reply_comment(
     client: &reqwest::Client,
@@ -21,6 +22,7 @@ pub async fn reply_comment(
     csrf_token: &str,
     root_id: Option<&str>,
     parent_id: Option<&str>,
+    cookie_str: &str,
 ) -> Result<Option<String>> {
     let aid = bvid::bvid_to_aid(bvid_str)
         .ok_or_else(|| anyhow::anyhow!("无法转换BVID: {}", bvid_str))?;
@@ -40,6 +42,9 @@ pub async fn reply_comment(
 
     let resp = client
         .post("https://api.bilibili.com/x/v2/reply/add")
+        .header("Cookie", cookie_str)
+        .header("Origin", "https://www.bilibili.com")
+        .header("Referer", "https://www.bilibili.com/")
         .form(&form)
         .send()
         .await
@@ -67,6 +72,7 @@ pub async fn like_comment(
     bvid_str: &str,
     comment_id: &str,
     csrf_token: &str,
+    cookie_str: &str,
 ) -> Result<bool> {
     let aid = bvid::bvid_to_aid(bvid_str)
         .ok_or_else(|| anyhow::anyhow!("无法转换BVID: {}", bvid_str))?;
@@ -81,6 +87,9 @@ pub async fn like_comment(
 
     let resp = client
         .post("https://api.bilibili.com/x/v2/reply/action")
+        .header("Cookie", cookie_str)
+        .header("Origin", "https://www.bilibili.com")
+        .header("Referer", "https://www.bilibili.com/")
         .form(&form)
         .send()
         .await?;

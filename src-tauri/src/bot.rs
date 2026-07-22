@@ -122,16 +122,28 @@ async fn bot_main_loop(state: Arc<BotState>) {
         round += 1;
         state.send_log("DEBUG", &format!("==== 第 {} 轮检查开始 ====", round));
 
-        // 检查配置热更新
-        if let Ok(new_config) = reload_rx.try_recv() {
+        // 检查配置热更新：排空所有待处理消息，只应用最新一条，
+        // 避免短时间内多次保存导致 rate_limiter 用到过期配置
+        let mut latest: Option<RawConfig> = None;
+        while let Ok(cfg) = reload_rx.try_recv() {
+            latest = Some(cfg);
+        }
+        if let Some(new_config) = latest {
             let rl = &new_config.rate_limit;
             state.rate_limiter.reconfigure(
                 rl.min_request_interval,
                 rl.max_retries,
                 rl.retry_delay,
             );
-            *state.config.write().await = new_config;
-            state.send_log("INFO", "配置已热更新");
+            // bot_state.config 已由 save_config 即时写入，此处仅兜底保证一致
+            *state.config.write().await = new_config.clone();
+            state.send_log("INFO", &format!(
+                "配置已热更新: AI={:?}, reply_enabled={}, check_interval={}s, max_process={}",
+                new_config.ai.provider,
+                new_config.reply.enabled,
+                new_config.bilibili.check_interval,
+                new_config.reply.max_process,
+            ));
         }
 
         let config = state.config.read().await.clone();
@@ -243,6 +255,12 @@ async fn bot_main_loop(state: Arc<BotState>) {
             if state.shutdown.load(Ordering::Relaxed) {
                 return;
             }
+            // 配置更新时立即打断等待，使新配置（如 check_interval）即时生效；
+            // 消息仍留在通道中，由下一轮顶部排空并应用
+            if reload_rx.len() > 0 {
+                state.send_log("INFO", "检测到配置更新，提前结束等待以应用新配置");
+                break;
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     }
@@ -268,7 +286,7 @@ async fn process_comments(
     }
 
     // 非预览模式才需要 CSRF 和 Cookie 校验
-    let csrf = if !dry_run {
+    let (csrf, cookie_str) = if !dry_run {
         let cm = state.cookie_manager.lock().await;
         let token = cm.get_csrf_from_cookie();
         let token = match token {
@@ -288,9 +306,10 @@ async fn process_comments(
             }
         }
 
-        token
+        // 取完整 Cookie 字符串，用于后续 Web API 请求的认证头
+        (token, cm.get_cookie_str())
     } else {
-        String::new() // dry_run 模式不需要
+        (String::new(), String::new()) // dry_run 模式不需要
     };
 
     let mut processed_count = 0u32;
@@ -461,6 +480,7 @@ async fn process_comments(
             &csrf,
             root_id,
             parent_id,
+            &cookie_str,
         ).await
         {
             Ok(None) => {
@@ -492,7 +512,7 @@ async fn process_comments(
                 // 点赞评论（可选）
                 if config.reply.like_enabled {
                     state.rate_limiter.wait();
-                    let _ = reply::like_comment(client, &video.bvid, &comment.comment_id, &csrf).await;
+                    let _ = reply::like_comment(client, &video.bvid, &comment.comment_id, &csrf, &cookie_str).await;
                 }
 
                 // 点赞用户视频（可选）

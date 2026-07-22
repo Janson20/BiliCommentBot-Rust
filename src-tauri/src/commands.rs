@@ -75,6 +75,10 @@ pub async fn save_config(
     new_config: crate::config::RawConfig,
 ) -> Result<(), String> {
     app_config.save(new_config.clone()).map_err(|e| e.to_string())?;
+    // 即时写入 bot_state.config，使 get_video_list / check_ollama_availability 等
+    // 读取 bot_state.config 的命令立即反映新配置，无需等待主循环下一轮
+    *bot_state.config.write().await = new_config.clone();
+    // 广播通知主循环：重配 rate_limiter、记录日志，并打断 check_interval 等待
     let _ = bot_state.reload_tx.send(new_config);
     Ok(())
 }
