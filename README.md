@@ -15,6 +15,7 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 - 🔑 **扫码登录**：B 站 APP 扫码获取 Cookie，支持手动输入 + 自动刷新
 - 👍 回复后自动点赞评论 / 点赞用户最新视频（可选）
 - 👥 仅给关注了你的用户视频点赞（可选）
+- 🧹 **评论过滤**：关键词黑白名单、评论长度、用户 UID 黑白名单三重过滤，精准控制回复范围
 - 🌐 **新手教程向导**：首次启动 5 步分步引导 — B站登录 → AI引擎 → 回复设置 → 安全设置 → 完成，也支持一键导入 Python 版所有配置和历史
 - 📊 实时仪表盘：运行状态、已回复统计、最近日志
 - ⚙️ **配置热更新**：修改后立即生效无需重启
@@ -172,6 +173,16 @@ max_process = 10       # 每次最多处理评论数
 chained_reply_enabled = true
 max_reply_depth = 3
 
+# 关键词过滤（[reply.keyword_filter]）
+# 启用后，评论内容命中黑名单则跳过；白名单非空时需匹配白名单才回复
+# mode: any（任一匹配）/ all（全部匹配）；match_case: 是否区分大小写
+
+# 评论长度过滤（[reply.length_filter]）
+# min_length / max_length，0 表示不限制（按 UTF-8 字符数计数）
+
+# 用户过滤（[reply.user_filter]）
+# whitelist / blacklist 为逗号分隔的 UID 列表
+
 [ai]
 provider = "deepseek"  # "deepseek" 或 "ollama"
 ```
@@ -204,6 +215,7 @@ provider = "deepseek"  # "deepseek" 或 "ollama"
 
 ## 更新记录
 
+- **新增评论过滤器**：从 Python 版同步移植关键词黑白名单、评论长度、用户 UID 黑白名单三重过滤。可在「配置 → 回复」标签页分别开关，命中过滤规则的评论将被跳过，不进入 AI 生成与回复流程。
 - **修复回复评论失败**：回复/点赞请求未携带会话 Cookie（`SESSDATA`），导致 B站判定未登录而拒绝。现已将完整 Cookie 头及 `Origin`/`Referer` 一并附加到 Web API 请求，确保鉴权通过。
 - **修复配置编辑不能立即生效**：`save_config` 现即时写入运行时配置（`bot_state.config`），使 `get_video_list`、`check_ollama_availability` 等命令立即返回新值；主循环排空所有待处理更新并只应用最新一条，且 `check_interval` 等待可被配置更新提前打断，新配置无需等到下一轮才生效。
 

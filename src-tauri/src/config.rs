@@ -147,6 +147,55 @@ impl Default for OllamaConfig {
     }
 }
 
+/// 关键词过滤配置
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KeywordFilterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 白名单关键词（逗号分隔），评论必须匹配才回复；留空则不限制
+    #[serde(default)]
+    pub whitelist: String,
+    /// 黑名单关键词（逗号分隔），匹配任一则跳过
+    #[serde(default)]
+    pub blacklist: String,
+    /// 白名单匹配模式：any（任一匹配）或 all（全部匹配）
+    #[serde(default = "default_keyword_mode")]
+    pub mode: String,
+    /// 是否区分大小写
+    #[serde(default)]
+    pub match_case: bool,
+}
+
+fn default_keyword_mode() -> String { "any".into() }
+
+/// 评论长度过滤配置
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LengthFilterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 最短长度（0=不限制）
+    #[serde(default)]
+    pub min_length: u32,
+    /// 最长长度（0=不限制）
+    #[serde(default = "default_length_max")]
+    pub max_length: u32,
+}
+
+fn default_length_max() -> u32 { 500 }
+
+/// 用户过滤配置
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UserFilterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 白名单 UID（逗号分隔），仅回复这些用户
+    #[serde(default)]
+    pub whitelist: String,
+    /// 黑名单 UID（逗号分隔），屏蔽这些用户
+    #[serde(default)]
+    pub blacklist: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyConfig {
     #[serde(default = "default_true")]
@@ -176,6 +225,12 @@ pub struct ReplyConfig {
     /// 预览模式：走完整流程生成AI回复并记录日志，但不实际发表、不存历史
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub keyword_filter: KeywordFilterConfig,
+    #[serde(default)]
+    pub length_filter: LengthFilterConfig,
+    #[serde(default)]
+    pub user_filter: UserFilterConfig,
 }
 
 impl Default for ReplyConfig {
@@ -194,6 +249,9 @@ impl Default for ReplyConfig {
             chained_reply_enabled: true,
             max_reply_depth: default_max_reply_depth(),
             dry_run: false,
+            keyword_filter: KeywordFilterConfig::default(),
+            length_filter: LengthFilterConfig::default(),
+            user_filter: UserFilterConfig::default(),
         }
     }
 }
