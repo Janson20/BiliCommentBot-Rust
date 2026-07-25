@@ -177,7 +177,7 @@
 <div class="section">
   <h2>ℹ️ 关于</h2>
   <div class="about">
-    <p>BiliCommentBot-RS v0.1.3</p>
+    <p>BiliCommentBot-RS v0.1.4</p>
     <p class="sub">Rust + Tauri + Svelte 构建 · Windows 桌面版</p>
     <p class="sub">基于 <a href="https://github.com/Janson20/BiliCommentBot" target="_blank">BiliCommentBot</a> 移植</p>
   </div>
