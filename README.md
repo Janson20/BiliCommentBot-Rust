@@ -159,7 +159,7 @@ check_interval = 60    # 检查间隔（秒）
 
 [deepseek]
 api_key = "sk-xxx"     # DeepSeek API 密钥
-model = "deepseek-chat"
+model = "deepseek-v4-flash"
 
 [ollama]
 base_url = "http://127.0.0.1:11434"

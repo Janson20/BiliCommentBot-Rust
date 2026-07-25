@@ -344,8 +344,8 @@ fn default_retry_delay() -> u64 { 5 }
 fn default_cache_expire() -> u64 { 300 }
 fn default_video_cache_expire() -> u64 { 43200 }
 fn default_video_cache_file() -> String { "video_cache.json".into() }
-fn default_deepseek_base_url() -> String { "https://api.deepseek.com/v1".into() }
-fn default_deepseek_model() -> String { "deepseek-chat".into() }
+fn default_deepseek_base_url() -> String { "https://api.deepseek.com".into() }
+fn default_deepseek_model() -> String { "deepseek-v4-flash".into() }
 fn default_max_tokens() -> u32 { 200 }
 fn default_temperature() -> f64 { 0.7 }
 fn default_system_prompt() -> String {
@@ -471,7 +471,7 @@ mod tests {
     fn test_default_config() {
         let cfg = RawConfig::default();
         assert_eq!(cfg.bilibili.check_interval, 60);
-        assert_eq!(cfg.deepseek.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(cfg.deepseek.base_url, "https://api.deepseek.com");
         assert_eq!(cfg.rate_limit.max_retries, 3);
         assert_eq!(cfg.reply.max_process, 10);
     }
