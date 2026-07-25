@@ -167,7 +167,7 @@
   // ════════════════════════════════════════════════
   let aiProvider = "deepseek";
   let deepseekApiKey = "";
-  let deepseekModel = "deepseek-chat";
+  let deepseekModel = "deepseek-v4-flash";
   let ollamaBaseUrl = "http://127.0.0.1:11434";
   let ollamaModel = "qwen2.5:7b";
   let ollamaChecking = false;
@@ -196,7 +196,7 @@
       if (aiProvider === "deepseek") {
         cfg.deepseek = cfg.deepseek || {};
         cfg.deepseek.api_key = deepseekApiKey;
-        cfg.deepseek.model = deepseekModel || "deepseek-chat";
+        cfg.deepseek.model = deepseekModel || "deepseek-v4-flash";
       } else {
         cfg.ollama = cfg.ollama || {};
         cfg.ollama.base_url = ollamaBaseUrl;
@@ -470,7 +470,7 @@
           </div>
           <div class="field">
             <label>模型</label>
-            <input type="text" bind:value={deepseekModel} placeholder="deepseek-chat" />
+            <input type="text" bind:value={deepseekModel} placeholder="deepseek-v4-flash" />
           </div>
         </div>
       {:else}
