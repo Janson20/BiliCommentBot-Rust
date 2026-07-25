@@ -66,20 +66,24 @@ impl RateLimiter {
 
     /// 等待直到可以发送请求（异步非阻塞）
     pub async fn wait(&self) {
-        let interval = {
+        let sleep_time = {
             let mut a = self.adaptive_interval.lock().unwrap();
             let v = self.current_interval();
             *a = v;
-            v
+            let mut last = self.last_request.lock().unwrap();
+            let elapsed = last.elapsed().as_secs_f64();
+            let needed = if elapsed < v {
+                let jitter = rand::thread_rng().gen_range(0.0..1.0);
+                v - elapsed + jitter
+            } else {
+                0.0
+            };
+            *last = Instant::now();
+            needed
         };
-        let mut last = self.last_request.lock().unwrap();
-        let elapsed = last.elapsed().as_secs_f64();
-        if elapsed < interval {
-            let jitter = rand::thread_rng().gen_range(0.0..1.0);
-            let sleep_time = interval - elapsed + jitter;
+        if sleep_time > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
         }
-        *last = Instant::now();
     }
 
     pub fn record_success(&self) {
