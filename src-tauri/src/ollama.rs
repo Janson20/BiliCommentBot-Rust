@@ -50,7 +50,9 @@ pub async fn check_availability(base_url: &str) -> Result<bool> {
 
 /// 获取 Ollama 可用模型列表
 pub async fn list_models(base_url: &str) -> Result<Vec<String>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
     let resp = client
         .get(format!("{}/api/tags", base_url))
         .send()

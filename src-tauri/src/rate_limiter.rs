@@ -64,8 +64,8 @@ impl RateLimiter {
         }
     }
 
-    /// 等待直到可以发送请求（阻塞）
-    pub fn wait(&self) {
+    /// 等待直到可以发送请求（异步非阻塞）
+    pub async fn wait(&self) {
         let interval = {
             let mut a = self.adaptive_interval.lock().unwrap();
             let v = self.current_interval();
@@ -77,7 +77,7 @@ impl RateLimiter {
         if elapsed < interval {
             let jitter = rand::thread_rng().gen_range(0.0..1.0);
             let sleep_time = interval - elapsed + jitter;
-            std::thread::sleep(Duration::from_secs_f64(sleep_time));
+            tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
         }
         *last = Instant::now();
     }

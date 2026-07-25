@@ -105,6 +105,7 @@ async fn bot_main_loop(state: Arc<BotState>) {
         .gzip(true)
         .deflate(true)
         .brotli(true)
+        .timeout(std::time::Duration::from_secs(30))
         .user_agent(http_client::random_web_ua())
         .build()
         .expect("Failed to build HTTP client");
@@ -216,7 +217,7 @@ async fn bot_main_loop(state: Arc<BotState>) {
                 continue;
             }
 
-            state.rate_limiter.wait();
+            state.rate_limiter.wait().await;
 
             state.send_log("DEBUG", &format!("请求评论: {} 页数上限={}", video.bvid, config.bilibili.max_comment_pages));
             match comment_fetcher::get_video_comments(
@@ -397,7 +398,7 @@ async fn process_comments(
         ));
 
         // 频率控制等待
-        state.rate_limiter.wait();
+        state.rate_limiter.wait().await;
         state.send_log("DEBUG", &format!("  频率等待完成, 连续失败={}", state.rate_limiter.failure_count()));
 
         // 收集上下文评论
@@ -478,7 +479,7 @@ async fn process_comments(
         }
 
         // 发送回复
-        state.rate_limiter.wait();
+        state.rate_limiter.wait().await;
         let root_id = comment.root_id.as_deref().or(Some(&comment.comment_id));
         let parent_id = comment.parent_id.as_deref().or(Some(&comment.comment_id));
 
@@ -529,7 +530,7 @@ async fn process_comments(
 
                 // 点赞评论（可选）
                 if config.reply.like_enabled {
-                    state.rate_limiter.wait();
+                    state.rate_limiter.wait().await;
                     let _ = reply::like_comment(client, &video.bvid, &comment.comment_id, &csrf, &cookie_str).await;
                 }
 
@@ -538,7 +539,7 @@ async fn process_comments(
                     if config.reply.like_user_video_only_followers
                         && !config.bilibili.uid.is_empty()
                     {
-                        state.rate_limiter.wait();
+                        state.rate_limiter.wait().await;
                         if let Ok(is_follower) = reply::check_is_follower(
                             client,
                             &config.bilibili.uid,
@@ -553,7 +554,7 @@ async fn process_comments(
                     if let Ok(Some((user_video_bvid, _))) =
                         reply::get_user_latest_video(client, &comment.uid).await
                     {
-                        state.rate_limiter.wait();
+                        state.rate_limiter.wait().await;
                         let _ = reply::like_video(client, &user_video_bvid).await;
                     }
                 }
