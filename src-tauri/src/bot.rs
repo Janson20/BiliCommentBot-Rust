@@ -447,6 +447,13 @@ async fn process_comments(
             }
         };
 
+        // 跳过空回复
+        if reply_text.trim().is_empty() {
+            state.send_log("WARN", &format!("AI 回复为空，跳过评论 [{}]", comment.user));
+            state.rate_limiter.record_failure();
+            continue;
+        }
+
         // 添加回复前缀
         let prefix = &config.reply.prefix;
         let full_reply = if prefix.is_empty() {
