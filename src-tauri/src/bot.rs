@@ -75,12 +75,12 @@ impl BotState {
         let _ = self.event_tx.send(BotEvent::Log(entry));
     }
 
-    pub fn send_stats(&self, total_replied: u64, consecutive_failures: u32) {
+    pub async fn send_stats(&self, total_replied: u64, consecutive_failures: u32) {
         let stats = BotStats {
             running: self.running.load(Ordering::Relaxed),
             total_replied,
-            start_time: self.start_time.blocking_lock().clone(),
-            last_check: self.last_check.blocking_lock().clone(),
+            start_time: self.start_time.lock().await.clone(),
+            last_check: self.last_check.lock().await.clone(),
             consecutive_failures,
         };
         let _ = self.event_tx.send(BotEvent::Stats(stats));
@@ -217,27 +217,38 @@ async fn bot_main_loop(state: Arc<BotState>) {
                 continue;
             }
 
-            state.rate_limiter.wait().await;
+            // 单个视频整体超时，防止任何环节卡死整个机器人
+            let video_result = tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                async {
+                    state.rate_limiter.wait().await;
 
-            state.send_log("DEBUG", &format!("请求评论: {} 页数上限={}", video.bvid, config.bilibili.max_comment_pages));
-            match comment_fetcher::get_video_comments(
-                &http_client,
-                &video.bvid,
-                config.bilibili.max_comment_pages,
-                config.reply.chained_reply_enabled,
-                config.reply.max_reply_depth,
+                    state.send_log("DEBUG", &format!("请求评论: {} 页数上限={}", video.bvid, config.bilibili.max_comment_pages));
+                    match comment_fetcher::get_video_comments(
+                        &http_client,
+                        &video.bvid,
+                        config.bilibili.max_comment_pages,
+                        config.reply.chained_reply_enabled,
+                        config.reply.max_reply_depth,
+                    )
+                    .await
+                    {
+                        Ok(comments) => {
+                            let total = comments.len();
+                            state.send_log("INFO", &format!("视频 {} 获取到 {} 条评论（含楼中楼）", video.bvid, total));
+                            process_comments(&state, &http_client, &config, video, &comments).await;
+                        }
+                        Err(e) => {
+                            state.send_log("ERROR", &format!("获取评论失败 [{}]: {}", video.bvid, e));
+                            state.rate_limiter.record_failure();
+                        }
+                    }
+                },
             )
-            .await
-            {
-                Ok(comments) => {
-                    let total = comments.len();
-                    state.send_log("INFO", &format!("视频 {} 获取到 {} 条评论（含楼中楼）", video.bvid, total));
-                    process_comments(&state, &http_client, &config, video, &comments).await;
-                }
-                Err(e) => {
-                    state.send_log("ERROR", &format!("获取评论失败 [{}]: {}", video.bvid, e));
-                    state.rate_limiter.record_failure();
-                }
+            .await;
+
+            if video_result.is_err() {
+                state.send_log("WARN", &format!("视频 {} 处理超时（120秒），跳过该视频", video.bvid));
             }
         }
 
@@ -246,7 +257,7 @@ async fn bot_main_loop(state: Arc<BotState>) {
         state.send_stats(
             state.history.lock().await.total_replied(),
             state.rate_limiter.failure_count(),
-        );
+        ).await;
         state.send_log("INFO", &format!(
             "==== 第 {} 轮完成 等待 {} 秒 ====",
             round, interval
