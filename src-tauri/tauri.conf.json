@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "BiliCommentBot-RS",
-    "version": "0.1.4"
+    "version": "0.1.5"
   },
   "tauri": {
     "allowlist": {
@@ -79,6 +79,11 @@
     "security": {
       "csp": null
     },
+    "systemTray": {
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": false,
+      "menuOnLeftClick": false
+    },
     "windows": [
       {
         "fullscreen": false,
@@ -88,7 +93,8 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "center": true
+        "center": true,
+        "visible": false
       }
     ]
   }

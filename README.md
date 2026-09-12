@@ -22,6 +22,8 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 - 📜 实时日志查看 + 分级别过滤 + 搜索 + 导出
 - 📋 回复历史记录查看 + 分页 + 清除（SQLite 存储，首次自动迁移旧 JSON 数据）
 - 🔒 登录密码保护（启动锁屏，bcrypt 哈希，兼容旧版 SHA-256 自动升级）
+- 🖥️ **系统托盘常驻**：关闭窗口时可选择「最小化到托盘」让机器人继续后台运行，托盘菜单可显示窗口 / 退出程序
+- 🚀 **开机自启**：一键写入注册表 Run 项，开机后静默启动到托盘（不弹窗），机器人随开机自动工作
 - 🗑️ **一键清空**：将配置、历史、Cookie、日志等所有数据移入回收站（需输入确认文字）
 - 🐳 体积轻量：前端 ~25KB gzipped，Rust 后端无运行时
 
@@ -124,7 +126,9 @@ BiliCommentBot-RS/
 ├── src-tauri/              # Rust 后端
 │   ├── src/
 │   │   ├── main.rs         # Tauri 入口 + BotState 初始化
-│   │   ├── commands.rs     # 19 个 Tauri 命令
+│   │   ├── commands.rs     # 24 个 Tauri 命令
+│   │   ├── desktop.rs      # 系统托盘 + 关闭窗口行为 + 退出流程
+│   │   ├── autostart.rs    # 开机自启（注册表 Run 项）
 │   │   ├── bot.rs          # 机器人主循环编排
 │   │   ├── config.rs       # TOML 配置管理
 │   │   ├── cookie.rs       # Cookie 扫码/刷新/验证
@@ -184,6 +188,10 @@ max_reply_depth = 3
 
 [ai]
 provider = "deepseek"  # "deepseek" 或 "ollama"
+
+[app]
+autostart = false      # 开机自启（Windows 注册表 Run 项，开机后静默进入托盘）
+close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最小化到托盘）/ exit（直接退出）
 ```
 
 ---
@@ -214,6 +222,10 @@ provider = "deepseek"  # "deepseek" 或 "ollama"
 
 ## 更新记录
 
+- **新增系统托盘与开机自启**：新增 `desktop.rs`（托盘图标 + 菜单「显示主窗口 / 退出程序」，左键单击托盘图标恢复窗口）与 `autostart.rs`（通过 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现开机自启，无需管理员权限）。
+  - 关闭主窗口时按 `[app] close_action` 处理：`ask`（默认，弹出系统原生对话框选择「最小化到托盘」/「退出程序」）、`tray`（直接隐藏到托盘）、`exit`（直接退出）。隐藏到托盘时机器人继续在后台运行，只有「退出程序」才结束进程。
+  - 开机自启写入的命令行带 `--minimized` 参数，开机后静默启动到托盘、不弹出窗口（`tauri.conf.json` 中窗口改为 `visible: false`，由启动逻辑决定是否显示，避免闪窗）。
+  - 「系统设置 → 启动与窗口」新增开关与下拉选项，可随时修改并立即写入注册表 / `config.toml`。
 - **新增「立即检查」**：仪表盘新增按钮，机器人运行时可手动触发立即开始下一轮评论扫描，无需等待检查间隔（`trigger_manual_check` 命令此前为空壳，现已真正生效）。
 - **密码保护生效**：启用访问密码后，应用启动时弹出锁屏验证（此前密码可设置但从不校验，现已实际拦截，`verify_password` 命令接入启动流程）。
 - **启动状态同步**：启动时主动拉取机器人运行状态，修复事件未到达时仪表盘显示陈旧"已停止"的问题（`get_bot_status` 接入启动流程）。

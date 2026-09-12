@@ -36,5 +36,9 @@ export const setPassword = (pwd) => invoke("set_password", { password: pwd });
 export const verifyPassword = (input) =>
   invoke("verify_password", { input });
 
+// ── 开机自启（Windows 注册表 Run 项）──
+export const getAutostartStatus = () => invoke("get_autostart_status");
+export const setAutostart = (enabled) => invoke("set_autostart", { enabled });
+
 // ── 清空数据 ──
 export const clearAllData = () => invoke("clear_all_data");

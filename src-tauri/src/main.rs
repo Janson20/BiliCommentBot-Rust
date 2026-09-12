@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_sign;
+mod autostart;
 mod bot;
 mod bvid;
 mod commands;
@@ -9,6 +10,7 @@ mod comment_fetcher;
 mod config;
 mod cookie;
 mod deepseek;
+mod desktop;
 mod history;
 mod http_client;
 mod ollama;
@@ -33,10 +35,17 @@ fn main() {
         .init();
 
     tauri::Builder::default()
+        // 系统托盘：左键显示主窗口，右键菜单提供「显示主窗口 / 退出程序」
+        .system_tray(desktop::tray())
+        .on_system_tray_event(desktop::on_tray_event)
+        // 关闭主窗口时按配置询问 / 最小化到托盘 / 直接退出
+        .on_window_event(desktop::on_window_event)
         .setup(|app| {
             let app_config = AppConfig::new();
             let cfg = app_config.get();
             let rl = &cfg.rate_limit;
+            let autostart_enabled = cfg.app.autostart;
+            let start_minimized = autostart::started_minimized();
 
             // 初始化 CookieManager（含10秒超时防止挂起）
             let mut cookie_mgr =
@@ -112,6 +121,28 @@ fn main() {
 
             app.manage(app_config);
             app.manage(bot_state);
+            app.manage(desktop::DesktopState::default());
+
+            // 窗口显示策略：
+            //  · 开机自启（命令行带 --minimized）→ 保持隐藏，静默运行在系统托盘
+            //  · 正常启动 → 显示并聚焦主窗口
+            // tauri.conf.json 中窗口默认 visible=false，由这里决定是否显示，
+            // 这样开机自启时不会闪出窗口。
+            match app.get_window("main") {
+                Some(window) => {
+                    if start_minimized {
+                        let _ = window.hide();
+                        log::info!("检测到 {} 参数，主窗口保持隐藏（系统托盘运行）", autostart::MINIMIZED_ARG);
+                    } else {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                None => log::warn!("未找到主窗口 main，无法设置显示状态"),
+            }
+
+            // 配置里记着已开启开机自启时，刷新注册表项以指向当前 exe 路径
+            autostart::sync_if_enabled(autostart_enabled);
 
             Ok(())
         })
@@ -138,6 +169,8 @@ fn main() {
             commands::set_password,
             commands::verify_password,
             commands::clear_all_data,
+            commands::get_autostart_status,
+            commands::set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

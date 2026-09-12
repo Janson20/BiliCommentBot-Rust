@@ -304,6 +304,48 @@ pub struct AiConfig {
     pub provider: AiProvider,
 }
 
+/// 关闭主窗口时的行为
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseAction {
+    /// 每次关闭都弹窗询问
+    Ask,
+    /// 直接最小化（隐藏）到系统托盘，机器人继续后台运行
+    Tray,
+    /// 直接退出程序
+    Exit,
+}
+
+/// 桌面程序行为配置（开机自启 / 关闭窗口行为）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUiConfig {
+    /// 开机自启：写入注册表 Run 项，开机后静默启动到系统托盘
+    #[serde(default)]
+    pub autostart: bool,
+    /// 关闭主窗口时的行为：ask / tray / exit
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
+}
+
+impl Default for AppUiConfig {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            close_action: default_close_action(),
+        }
+    }
+}
+
+impl AppUiConfig {
+    /// 解析 close_action，非法值按 ask 处理（兼容手改配置文件）
+    pub fn close_action_kind(&self) -> CloseAction {
+        match self.close_action.trim().to_ascii_lowercase().as_str() {
+            "tray" | "minimize" | "minimize_to_tray" => CloseAction::Tray,
+            "exit" | "quit" | "close" => CloseAction::Exit,
+            _ => CloseAction::Ask,
+        }
+    }
+}
+
 /// 顶层配置 —— 完全兼容 Python 版 config.toml 的 section 结构
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RawConfig {
@@ -328,6 +370,9 @@ pub struct RawConfig {
     /// AI 提供商选择（新增字段，Python 版无此字段，兼容处理）
     #[serde(default)]
     pub ai: AiConfig,
+    /// 桌面程序行为（新增字段，Python 版无此字段，兼容处理）
+    #[serde(default)]
+    pub app: AppUiConfig,
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -359,6 +404,7 @@ fn default_reply_delay() -> u64 { 2 }
 fn default_max_reply_depth() -> u32 { 3 }
 fn default_log_level() -> String { "INFO".into() }
 fn default_log_file() -> String { "logs/bot.log".into() }
+fn default_close_action() -> String { "ask".into() }
 
 // ════════════════════════════════════════════════════════════════
 //  运行时配置管理器 (AppConfig)
@@ -474,6 +520,24 @@ mod tests {
         assert_eq!(cfg.deepseek.base_url, "https://api.deepseek.com");
         assert_eq!(cfg.rate_limit.max_retries, 3);
         assert_eq!(cfg.reply.max_process, 10);
+        assert!(!cfg.app.autostart);
+        assert_eq!(cfg.app.close_action_kind(), CloseAction::Ask);
+    }
+
+    #[test]
+    fn test_close_action_parsing() {
+        let mut app = AppUiConfig::default();
+        assert_eq!(app.close_action_kind(), CloseAction::Ask);
+        for value in ["tray", "minimize", " MINIMIZE_TO_TRAY "] {
+            app.close_action = value.into();
+            assert_eq!(app.close_action_kind(), CloseAction::Tray, "value={value}");
+        }
+        for value in ["exit", "quit", "CLOSE"] {
+            app.close_action = value.into();
+            assert_eq!(app.close_action_kind(), CloseAction::Exit, "value={value}");
+        }
+        app.close_action = "随便写的".into();
+        assert_eq!(app.close_action_kind(), CloseAction::Ask);
     }
 
     #[test]
@@ -483,5 +547,22 @@ mod tests {
         let parsed: RawConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.bilibili.check_interval, cfg.bilibili.check_interval);
         assert_eq!(parsed.deepseek.model, cfg.deepseek.model);
+        assert_eq!(parsed.app.close_action, cfg.app.close_action);
+    }
+
+    /// 旧版（无 [app] 段）配置文件仍应能正常解析
+    #[test]
+    fn test_config_without_app_section() {
+        let legacy = r#"
+[bilibili]
+uid = "123"
+[auth]
+enabled = false
+password = ""
+"#;
+        let parsed: RawConfig = toml::from_str(legacy).unwrap();
+        assert_eq!(parsed.bilibili.uid, "123");
+        assert!(!parsed.app.autostart);
+        assert_eq!(parsed.app.close_action_kind(), CloseAction::Ask);
     }
 }

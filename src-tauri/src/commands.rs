@@ -607,6 +607,61 @@ pub async fn verify_password(
 }
 
 // ════════════════════════════════════════════════════════════════
+//  开机自启（Windows 注册表 Run 项）
+// ════════════════════════════════════════════════════════════════
+
+/// 查询开机自启状态（以注册表为准，并同步配置文件中的记录）
+#[tauri::command]
+pub async fn get_autostart_status(
+    app_config: State<'_, AppConfig>,
+) -> Result<serde_json::Value, String> {
+    let enabled = crate::autostart::is_enabled();
+    let launch_command = crate::autostart::launch_command().unwrap_or_default();
+
+    // 配置文件里的记录可能与注册表不一致（用户在任务管理器里禁用等），以注册表为准
+    let mut current = app_config.get();
+    if current.app.autostart != enabled {
+        current.app.autostart = enabled;
+        app_config.save(current).map_err(|e| e.to_string())?;
+    }
+
+    Ok(serde_json::json!({
+        "enabled": enabled,
+        "launch_command": launch_command,
+        "supported": cfg!(windows),
+    }))
+}
+
+/// 开启 / 关闭开机自启（写入或删除注册表 Run 项，并持久化到 config.toml）
+#[tauri::command]
+pub async fn set_autostart(
+    app_config: State<'_, AppConfig>,
+    bot_state: State<'_, Arc<BotState>>,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    crate::autostart::set(enabled).map_err(|e| e.to_string())?;
+
+    // 以注册表实际状态为准（写失败或系统策略拦截时不至于撒谎）
+    let actual = crate::autostart::is_enabled();
+    let mut current = app_config.get();
+    current.app.autostart = actual;
+    app_config
+        .save(current.clone())
+        .map_err(|e| e.to_string())?;
+    // 同步内存配置，避免 bot_state 中的副本过期
+    *bot_state.config.write().await = current.clone();
+    let _ = bot_state.reload_tx.send(current);
+
+    log::info!("开机自启已{}", if actual { "开启" } else { "关闭" });
+
+    Ok(serde_json::json!({
+        "enabled": actual,
+        "launch_command": crate::autostart::launch_command().unwrap_or_default(),
+        "supported": cfg!(windows),
+    }))
+}
+
+// ════════════════════════════════════════════════════════════════
 //  清空所有数据（移至回收站）
 // ════════════════════════════════════════════════════════════════
 
