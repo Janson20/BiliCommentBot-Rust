@@ -41,4 +41,7 @@ export const getAutostartStatus = () => invoke("get_autostart_status");
 export const setAutostart = (enabled) => invoke("set_autostart", { enabled });
 
 // ── 清空数据 ──
+// get_data_files → { data_dir, files: [{ path, exists, size }] }
+export const getDataFiles = () => invoke("get_data_files");
+// clear_all_data → { trashed, total, errors, data_dir, files }
 export const clearAllData = () => invoke("clear_all_data");

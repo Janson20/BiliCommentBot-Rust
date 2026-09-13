@@ -1,0 +1,13 @@
+# Cargo 配置
+#
+# 这里把「数据目录」环境变量指向 target/ 下的子目录，作用是：
+#
+#   1. `cargo test` 不会往用户真实的 %APPDATA%\BiliCommentBot-RS 里写东西；
+#   2. `npm run tauri dev` 的运行时数据（config.toml / history.db / cookie 等）
+#      落在 src-tauri/target/ 内，而 target 已被 .gitignore 忽略 ——
+#      历史上真实的 config.toml（含 Cookie 与 API Key）就是因为数据写在工作
+#      目录里而被误提交进仓库的。
+#
+# 想用别的目录时，在命令行显式设置同名环境变量即可覆盖（默认 force = false）。
+[env]
+BILICOMMENTBOT_DATA_DIR = { value = "target/dev-data", relative = true }

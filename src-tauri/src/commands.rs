@@ -6,8 +6,9 @@ use tauri::State;
 
 use crate::bot::{self, BotEvent, BotState};
 use crate::config::AppConfig;
-use crate::cookie::QrGenerateResult;
+use crate::cookie::{CookieVerifyResult, QrGenerateResult};
 use crate::history::HistoryEntry;
+use crate::paths;
 use crate::video_fetcher::VideoInfo;
 
 // ════════════════════════════════════════════════════════════════
@@ -15,30 +16,33 @@ use crate::video_fetcher::VideoInfo;
 // ════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-pub async fn start_bot(
-    state: State<'_, Arc<BotState>>,
-) -> Result<(), String> {
-    if state.running.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err("机器人已在运行中".into());
-    }
-    state.shutdown.store(false, std::sync::atomic::Ordering::Relaxed);
-    state.running.store(true, std::sync::atomic::Ordering::Relaxed);
-    bot::start_bot(state.inner().clone());
-    let _ = state.event_tx.send(BotEvent::Status { running: true });
+pub async fn start_bot(state: State<'_, Arc<BotState>>) -> Result<(), String> {
+    bot::try_start(state.inner())?;
+    // 立即推一次统计，避免界面在首轮结束前一直显示 "—"
+    let total = state.history.lock().await.total_replied();
+    state
+        .send_stats(total, state.rate_limiter.failure_count())
+        .await;
     log::info!("机器人已启动");
     Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_bot(
-    state: State<'_, Arc<BotState>>,
-) -> Result<(), String> {
+pub async fn stop_bot(state: State<'_, Arc<BotState>>) -> Result<(), String> {
     if !state.running.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("机器人未在运行".into());
     }
-    state.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-    state.running.store(false, std::sync::atomic::Ordering::Relaxed);
+    state
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    state
+        .running
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = state.event_tx.send(BotEvent::Status { running: false });
+    let total = state.history.lock().await.total_replied();
+    state
+        .send_stats(total, state.rate_limiter.failure_count())
+        .await;
     log::info!("机器人已停止");
     Ok(())
 }
@@ -54,6 +58,8 @@ pub async fn get_bot_status(
         "start_time": state.start_time.lock().await.clone(),
         "last_check": state.last_check.lock().await.clone(),
         "consecutive_failures": state.rate_limiter.failure_count(),
+        "history_available": state.history_available,
+        "data_dir": paths::data_dir().to_string_lossy(),
     }))
 }
 
@@ -78,6 +84,8 @@ pub async fn save_config(
     // 即时写入 bot_state.config，使 get_video_list / check_ollama_availability 等
     // 读取 bot_state.config 的命令立即反映新配置，无需等待主循环下一轮
     *bot_state.config.write().await = new_config.clone();
+    // 日志设置立即生效（即使机器人没在运行）
+    crate::logger::apply(&new_config.logging);
     // 广播通知主循环：重配 rate_limiter、记录日志，并打断 check_interval 等待
     let _ = bot_state.reload_tx.send(new_config);
     Ok(())
@@ -93,58 +101,86 @@ pub async fn migrate_from_old_project(
     let src = PathBuf::from(&old_project_dir);
     let migrated = std::sync::atomic::AtomicU32::new(0);
     let mut errors = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
+    // ── config.toml ──
     let config_src = src.join("config.toml");
     if config_src.exists() {
         let dest = app_config.file_path();
-        if let Err(e) = std::fs::copy(&config_src, &dest) {
-            errors.push(format!("config.toml: {}", e));
+
+        // 先校验能解析，再覆盖 —— 迁移不该毁掉一份可用的现有配置
+        let parsed_ok = std::fs::read_to_string(&config_src)
+            .ok()
+            .and_then(|c| toml::from_str::<crate::config::RawConfig>(&c).ok())
+            .is_some();
+
+        if !parsed_ok {
+            errors.push("config.toml: 解析失败，已跳过（现有配置未改动）".to_string());
         } else {
-            migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Ok(cfg) = app_config.reload() {
-                let _ = bot_state.reload_tx.send(cfg);
+            // 备份现有配置
+            if dest.exists() {
+                let backup = dest.with_extension("toml.bak");
+                if let Err(e) = std::fs::copy(&dest, &backup) {
+                    notes.push(format!("原配置备份失败（仍会继续迁移）: {}", e));
+                } else {
+                    notes.push(format!("原配置已备份为 {}", backup.display()));
+                }
+            }
+            match std::fs::copy(&config_src, &dest) {
+                Err(e) => errors.push(format!("config.toml: {}", e)),
+                Ok(_) => {
+                    migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Ok(cfg) = app_config.reload() {
+                        // 迁移进来的配置立即生效
+                        *bot_state.config.write().await = cfg.clone();
+                        crate::logger::apply(&cfg.logging);
+                        let _ = bot_state.reload_tx.send(cfg);
+                    }
+                }
             }
         }
     }
 
+    // ── history.json ──
     let history_src = src.join("history.json");
     if history_src.exists() {
-        let dest = PathBuf::from("history.json");
-        if let Err(e) = std::fs::copy(&history_src, &dest) {
+        // 中转文件放在数据目录，不再污染工作目录
+        let tmp = paths::resolve("history.json.migrating");
+        let _ = std::fs::remove_file(&tmp);
+        if let Err(e) = std::fs::copy(&history_src, &tmp) {
             errors.push(format!("history.json: {}", e));
         } else {
             let history = bot_state.history.lock().await;
-            match history.import_from_json(&dest) {
+            match history.import_from_json(&tmp) {
                 Ok(n) => {
                     migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    log::info!("已从旧项目导入 {} 条历史记录", n);
+                    notes.push(format!("已导入 {} 条历史记录", n));
                 }
                 Err(e) => errors.push(format!("history.json 导入失败: {}", e)),
             }
-            // 清理临时 JSON 文件
-            let _ = std::fs::remove_file(&dest);
+            drop(history);
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 
+    // ── bilibili_cookie.json ──
     let cookie_src = src.join("bilibili_cookie.json");
     if cookie_src.exists() {
-        let dest = PathBuf::from(crate::cookie::DEFAULT_COOKIE_FILE);
+        let dest = paths::cookie_file();
         if let Err(e) = std::fs::copy(&cookie_src, &dest) {
             errors.push(format!("bilibili_cookie.json: {}", e));
         } else {
             migrated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Ok(mut cm) = bot_state.cookie_manager.try_lock() {
-                let _ = cm.load_from_file(&dest);
-            } else {
-                let mut cm = bot_state.cookie_manager.lock().await;
-                let _ = cm.load_from_file(&dest);
-            }
+            let mut cm = bot_state.cookie_manager.lock().await;
+            let _ = cm.load_from_file(&dest);
         }
     }
 
+    // ── video_cache.json ──
     let video_cache_src = src.join("video_cache.json");
     if video_cache_src.exists() {
-        let dest = PathBuf::from("video_cache.json");
+        let cfg = app_config.get();
+        let dest = paths::resolve(&cfg.video_cache.cache_file);
         if let Err(e) = std::fs::copy(&video_cache_src, &dest) {
             errors.push(format!("video_cache.json: {}", e));
         } else {
@@ -153,9 +189,10 @@ pub async fn migrate_from_old_project(
     }
 
     Ok(serde_json::json!({
-        "success": true,
+        "success": errors.is_empty(),
         "migrated_count": migrated.load(std::sync::atomic::Ordering::Relaxed),
         "errors": errors,
+        "notes": notes,
     }))
 }
 
@@ -191,7 +228,7 @@ pub async fn poll_qr_login(
         cm.csrf_token = cm.get_csrf_from_cookie();
         let cookie_str = cm.get_cookie_str();
         let refresh_token = cm.refresh_token.clone();
-        let _ = cm.save_to_file(&PathBuf::from(crate::cookie::DEFAULT_COOKIE_FILE));
+        let _ = cm.save_to_file(&paths::cookie_file());
         log::info!("扫码Cookie已保存，共 {} 条", result.cookies.len());
 
         // 验证并获取 UID
@@ -233,9 +270,7 @@ pub async fn refresh_cookie(
     match cm.refresh_cookie().await {
         Ok((success, msg, new_token)) => {
             if success {
-                let _ = cm.save_to_file(
-                    &PathBuf::from(crate::cookie::DEFAULT_COOKIE_FILE),
-                );
+                let _ = cm.save_to_file(&paths::cookie_file());
             }
             Ok(serde_json::json!({
                 "success": success,
@@ -247,20 +282,62 @@ pub async fn refresh_cookie(
     }
 }
 
+/// 手动设置 Cookie。
+///
+/// **先校验再落盘**：早先的实现会先把 Cookie 写进文件与 config.toml，验证失败时
+/// 一份原本可用的登录就已经被覆盖掉了，用户还看不出发生了什么。
+/// 现在校验失败会完整恢复原有凭证，并把校验结果返回给前端。
 #[tauri::command]
 pub async fn set_cookie_manually(
+    app_config: State<'_, AppConfig>,
     bot_state: State<'_, Arc<BotState>>,
     cookie_str: String,
     refresh_token: Option<String>,
-) -> Result<(), String> {
+) -> Result<CookieVerifyResult, String> {
     let mut cm = bot_state.cookie_manager.lock().await;
+
+    let prev_cookies = cm.cookies.clone();
+    let prev_refresh_token = cm.refresh_token.clone();
+
     cm.set_cookie_from_str(&cookie_str);
     if let Some(rt) = refresh_token {
-        cm.refresh_token = rt;
+        if !rt.trim().is_empty() {
+            cm.refresh_token = rt;
+        }
     }
     cm.csrf_token = cm.get_csrf_from_cookie();
-    let _ = cm.save_to_file(&PathBuf::from(crate::cookie::DEFAULT_COOKIE_FILE));
-    Ok(())
+
+    // 无 SESSDATA/bili_jct 时直接返回，不会发起网络请求
+    let verify = cm.verify_cookie().await;
+
+    if !verify.valid {
+        // 回滚，保住原来能用的登录
+        cm.cookies = prev_cookies;
+        cm.refresh_token = prev_refresh_token;
+        cm.csrf_token = cm.get_csrf_from_cookie();
+        log::warn!("手动 Cookie 校验失败，已回滚到原有凭证: {}", verify.message);
+        return Ok(verify);
+    }
+
+    let _ = cm.save_to_file(&paths::cookie_file());
+    let cookie_saved = cm.get_cookie_str();
+    let refresh_token_saved = cm.refresh_token.clone();
+    let uid = verify.uid.clone();
+    drop(cm);
+
+    // 与扫码登录保持一致：同步写入 config.toml，
+    // 否则「已登录」判定与依赖 uid 取视频列表的逻辑都会失效
+    {
+        let mut cfg = bot_state.config.write().await;
+        cfg.bilibili.cookie = cookie_saved;
+        cfg.bilibili.refresh_token = refresh_token_saved;
+        if let Some(u) = uid {
+            cfg.bilibili.uid = u;
+        }
+        let _ = app_config.save(cfg.clone());
+    }
+
+    Ok(verify)
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -280,13 +357,15 @@ pub async fn get_video_list(
         .build()
         .map_err(|e| e.to_string())?;
 
+    let policy = bot_state.rate_limiter.retry_policy();
     let config = bot_state.config.read().await;
     let videos = crate::video_fetcher::get_video_list(
         &client,
         &config.bilibili.uid,
         config.bilibili.max_video_pages,
-        &PathBuf::from(&config.video_cache.cache_file),
+        &paths::resolve(&config.video_cache.cache_file),
         config.video_cache.expire_time,
+        policy,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -298,7 +377,10 @@ pub async fn get_video_list(
 pub async fn trigger_manual_check(
     bot_state: State<'_, Arc<BotState>>,
 ) -> Result<String, String> {
-    if !bot_state.running.load(std::sync::atomic::Ordering::Relaxed) {
+    if !bot_state
+        .running
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return Err("请先启动机器人".into());
     }
     bot_state
@@ -560,6 +642,8 @@ pub async fn set_password(
     if password.is_empty() {
         cfg.auth.enabled = false;
         cfg.auth.password = String::new();
+    } else if password.chars().count() < 4 {
+        return Err("密码至少需要 4 个字符".into());
     } else {
         cfg.auth.enabled = true;
         let hashed = hash(password.as_bytes(), DEFAULT_COST)
@@ -662,20 +746,82 @@ pub async fn set_autostart(
 }
 
 // ════════════════════════════════════════════════════════════════
-//  清空所有数据（移至回收站）
+//  数据文件（清空 / 预览）
 // ════════════════════════════════════════════════════════════════
 
-/// 收集工作目录中所有运行时生成的数据文件，停止机器人，关闭数据库，
-/// 将所有数据文件移至系统回收站，然后退出应用。
+/// 清空操作涉及的**全部**文件/目录。
+///
+/// 只允许出现在用户数据目录内 —— 早先的实现会递归清空进程当前工作目录下
+/// 除 `.exe` 以外的所有内容，在开发目录里等于把整个仓库（含 `.git`）移进回收站，
+/// 装成 MSI 后则等于把安装目录清空。
+fn managed_data_paths(cache_file: &str) -> Vec<PathBuf> {
+    let dir = paths::data_dir();
+    let mut out: Vec<PathBuf> = paths::DATA_FILES.iter().map(|n| dir.join(n)).collect();
+
+    // 自定义的缓存文件名
+    let cache_path = paths::resolve(cache_file);
+    if cache_path.starts_with(&dir) && !out.contains(&cache_path) {
+        out.push(cache_path);
+    }
+
+    out.push(dir.join(paths::LOG_DIR_NAME));
+    out.push(dir.join(crate::single_instance::LOCK_FILE_NAME));
+    out.retain(|p| p.starts_with(&dir));
+    out
+}
+
+fn data_file_report(cache_file: &str) -> serde_json::Value {
+    let files: Vec<serde_json::Value> = managed_data_paths(cache_file)
+        .into_iter()
+        .map(|p| {
+            let size = if p.is_file() {
+                std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            };
+            serde_json::json!({
+                "path": p.to_string_lossy(),
+                "exists": p.exists(),
+                "size": size,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "data_dir": paths::data_dir().to_string_lossy(),
+        "files": files,
+    })
+}
+
+/// 列出「清空数据」会处理的文件，供前端在确认框里如实展示
+#[tauri::command]
+pub async fn get_data_files(
+    app_config: State<'_, AppConfig>,
+) -> Result<serde_json::Value, String> {
+    let cfg = app_config.get();
+    Ok(data_file_report(&cfg.video_cache.cache_file))
+}
+
+/// 停止机器人 → 关闭数据库 → 把**数据目录内**的运行时文件移入回收站 → 退出应用。
+///
+/// 当没有可清理的文件时不会退出应用（前端据此显示不同提示）。
 #[tauri::command]
 pub async fn clear_all_data(
     app_handle: tauri::AppHandle,
+    app_config: State<'_, AppConfig>,
     bot_state: State<'_, Arc<BotState>>,
 ) -> Result<serde_json::Value, String> {
     // 1. 停止机器人
-    if bot_state.running.load(std::sync::atomic::Ordering::Relaxed) {
-        bot_state.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-        bot_state.running.store(false, std::sync::atomic::Ordering::Relaxed);
+    if bot_state
+        .running
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        bot_state
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        bot_state
+            .running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         let _ = bot_state.event_tx.send(BotEvent::Status { running: false });
         log::info!("已停止机器人，准备清空数据");
         // 等待后台任务退出
@@ -688,28 +834,40 @@ pub async fn clear_all_data(
         history.close();
     }
 
-    // 3. 收集工作目录下除 .exe 外的所有文件/目录
-    let cwd = std::env::current_dir().map_err(|e| format!("获取工作目录失败: {}", e))?;
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    // 3. 只清理数据目录内的已知文件
+    let cfg = app_config.get();
+    let targets: Vec<PathBuf> = managed_data_paths(&cfg.video_cache.cache_file)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
+
+    let data_dir = paths::data_dir();
     let mut errors: Vec<String> = Vec::new();
+    let mut trashed = 0u32;
+    let mut trashed_paths: Vec<String> = Vec::new();
 
-    let _ = collect_all_except_exe(&cwd, &cwd, &mut files);
-
-    if files.is_empty() {
+    if targets.is_empty() {
+        log::info!("没有可清理的数据文件（数据目录: {:?}）", data_dir);
         return Ok(serde_json::json!({
             "trashed": 0,
             "total": 0,
             "errors": [],
+            "data_dir": data_dir.to_string_lossy(),
+            "files": [],
             "message": "没有可清理的数据文件",
         }));
     }
 
-    // 4. 逐文件移至回收站
-    let mut trashed = 0u32;
-    for path in &files {
+    for path in &targets {
+        // 双保险：绝不越过数据目录
+        if !path.starts_with(&data_dir) {
+            errors.push(format!("{}: 不在数据目录内，已跳过", path.display()));
+            continue;
+        }
         match trash::delete(path) {
             Ok(()) => {
                 trashed += 1;
+                trashed_paths.push(path.to_string_lossy().to_string());
                 log::info!("已移至回收站: {}", path.display());
             }
             Err(e) => {
@@ -721,47 +879,105 @@ pub async fn clear_all_data(
     }
 
     log::info!(
-        "清空完成: {}/{} 个文件已移至回收站",
+        "清空完成: {}/{} 项已移至回收站（数据目录: {:?}）",
         trashed,
-        files.len()
+        targets.len(),
+        data_dir
     );
 
     let result = serde_json::json!({
         "trashed": trashed,
-        "total": files.len(),
+        "total": targets.len(),
         "errors": errors,
+        "data_dir": data_dir.to_string_lossy(),
+        "files": trashed_paths,
     });
 
-    // 5. 延迟退出，让前端收到响应
-    let handle = app_handle.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        handle.exit(0);
-    });
+    // 4. 延迟退出，让前端收到响应（只有真的清掉了东西才退出）
+    if trashed > 0 {
+        let handle = app_handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            handle.exit(0);
+        });
+    }
 
     Ok(result)
 }
 
-/// 递归收集工作目录下所有非 .exe 文件与目录（子目录先于父目录，确保有序删除）
-fn collect_all_except_exe(
-    _cwd: &std::path::Path,
-    dir: &std::path::Path,
-    out: &mut Vec<std::path::PathBuf>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ft = entry.file_type()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if ft.is_dir() {
-            collect_all_except_exe(_cwd, &path, out)?;
-            out.push(path);
-        } else if ft.is_file() {
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if !ext.eq_ignore_ascii_case("exe") {
-                out.push(path);
+    /// 清理范围必须严格限制在数据目录内
+    #[test]
+    fn test_managed_paths_are_confined_to_data_dir() {
+        let dir = paths::data_dir();
+        for p in managed_data_paths("video_cache.json") {
+            assert!(
+                p.starts_with(&dir),
+                "清理目标越界: {:?} 不在 {:?} 内",
+                p,
+                dir
+            );
+        }
+    }
+
+    /// 绝不能把工作目录 / 源码目录卷进来（历史事故）
+    #[test]
+    fn test_managed_paths_exclude_cwd_and_sources() {
+        let paths_list = managed_data_paths("video_cache.json");
+        let names: Vec<String> = paths_list
+            .iter()
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+            .collect();
+
+        for forbidden in ["src", "src-tauri", "node_modules", ".git", "target", "package.json"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "清理列表不应包含 {}: {:?}",
+                forbidden,
+                names
+            );
+        }
+
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd != paths::data_dir() {
+                for p in &paths_list {
+                    assert!(
+                        !p.starts_with(&cwd) || p.starts_with(paths::data_dir()),
+                        "清理目标落在工作目录内: {:?}",
+                        p
+                    );
+                }
             }
         }
     }
-    Ok(())
+
+    #[test]
+    fn test_managed_paths_include_expected_files() {
+        let dir = paths::data_dir();
+        let list = managed_data_paths("video_cache.json");
+        for expected in [
+            dir.join("config.toml"),
+            dir.join("history.db"),
+            dir.join("bilibili_cookie.json"),
+            dir.join("video_cache.json"),
+            dir.join("logs"),
+        ] {
+            assert!(list.contains(&expected), "缺少 {:?}", expected);
+        }
+    }
+
+    #[test]
+    fn test_data_file_report_shape() {
+        let report = data_file_report("video_cache.json");
+        assert!(report.get("data_dir").is_some());
+        let files = report["files"].as_array().expect("files 应为数组");
+        assert!(!files.is_empty());
+        let first = &files[0];
+        assert!(first.get("path").is_some());
+        assert!(first.get("exists").is_some());
+        assert!(first.get("size").is_some());
+    }
 }

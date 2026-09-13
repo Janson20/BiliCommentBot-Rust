@@ -22,8 +22,10 @@
   } from "./lib/stores.js";
   import { currentRoute, navigate } from "./lib/router.js";
   import { verifyCookie, getConfig, getBotStatus, verifyPassword } from "./lib/api.js";
+  import { isAiConfigured, isLoggedIn, needsSetupWizard } from "./lib/setup.js";
 
-  let wizardDone = false;
+  // null = 尚在检测（显示加载页，避免已配置用户看到向导闪现）
+  let wizardDone = null;
   let route = "/";           // 本地变量，绑定 store
   let unsubRoute = null;    // store 订阅取消函数
   let unlistenFn = null;    // event 取消函数
@@ -32,6 +34,20 @@
   let locked = false;
   let pwdInput = "";
   let unlocking = false;
+
+  /// 兜底：手动填写的 Cookie 只落到 cookie 文件，配置里可能没有 bilibili.uid。
+  /// 带超时，避免网络异常时长时间停在加载页。
+  async function hasLiveLogin() {
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 2000));
+    try {
+      const result = await Promise.race([verifyCookie(), timeout]);
+      if (result?.valid) {
+        loginStatus.set({ loggedIn: true, uname: result.uname, uid: result.uid });
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
 
   onMount(() => {
     // 显式订阅路由 store → 本地变量（比 $currentRoute 更可靠）
@@ -65,7 +81,7 @@
     }).then((fn) => { unlistenFn = fn; });
 
     // 后台加载配置 → 决定是否显示新手向导
-    // 条件：无 B站登录凭证 且 无 AI 配置 → 视为首次使用
+    // 首次使用条件：AI 未配置好，或未登录 B 站（且此前未完成过向导）
     (async () => {
       let cfg = null;
       try {
@@ -77,18 +93,14 @@
         locked = true;
       }
 
-      const hasLogin = !!(cfg?.bilibili?.cookie && cfg?.bilibili?.uid);
-      const hasAi = !!(
-        cfg?.ai?.provider === "ollama" &&
-        cfg?.ollama?.base_url &&
-        cfg?.ollama?.model
-      );
-      // 两者缺一则显示向导
-      if (!hasLogin || !hasAi) {
-        wizardDone = false;
-      } else {
-        wizardDone = true;
-      }
+      const hasLogin = isLoggedIn(cfg);
+      const hasAi = isAiConfigured(cfg);
+      // 配置里没有登录信息，但 Cookie 可能只存在于 bilibili_cookie.json
+      const needsLiveCheck = hasAi && !hasLogin;
+      const liveLogin = needsLiveCheck ? await hasLiveLogin() : false;
+
+      // 已完成过向导，或登录 + AI 都已配置齐全 → 不再打扰
+      wizardDone = !needsSetupWizard(cfg, liveLogin);
 
       // 启动时同步机器人运行状态（事件未到达前避免显示陈旧的"已停止"）
       try {
@@ -104,12 +116,15 @@
         }
       } catch (_) {}
 
-      try {
-        const result = await verifyCookie();
-        if (result?.valid) {
-          loginStatus.set({ loggedIn: true, uname: result.uname, uid: result.uid });
-        }
-      } catch (_) {}
+      // 需要兜底校验时上面已调用过 verifyCookie，避免重复请求
+      if (!needsLiveCheck) {
+        try {
+          const result = await verifyCookie();
+          if (result?.valid) {
+            loginStatus.set({ loggedIn: true, uname: result.uname, uid: result.uid });
+          }
+        } catch (_) {}
+      }
     })();
   });
 
@@ -161,6 +176,12 @@
       </button>
     </form>
   </div>
+{:else if wizardDone === null}
+  <div class="app-layout">
+    <div class="full-content">
+      <div class="boot-loading">加载中...</div>
+    </div>
+  </div>
 {:else if !wizardDone}
   <div class="app-layout">
     <div class="full-content">
@@ -180,9 +201,11 @@
         Dashboard
       } />
     </div>
-    <Toast />
   </div>
 {/if}
+
+<!-- 通知层提到条件分支之外：锁屏、向导、主界面共用同一个 Toast -->
+<Toast />
 
 <style>
   :global(*) { margin: 0; padding: 0; box-sizing: border-box; }
@@ -200,6 +223,7 @@
   .main-content {
     flex: 1; overflow-y: auto; padding: 24px 28px; background: #1a1a2e;
   }
+  .boot-loading { font-size: 0.9rem; color: #8aa0b8; letter-spacing: 1px; }
   :global(::-webkit-scrollbar) { width: 6px; }
   :global(::-webkit-scrollbar-track) { background: #0f1a2e; }
   :global(::-webkit-scrollbar-thumb) { background: #334; border-radius: 3px; }

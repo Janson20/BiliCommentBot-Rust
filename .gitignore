@@ -1,17 +1,28 @@
+# ── 构建产物与依赖 ──
 /tmp
-/node_modules
-/src-tauri/target
+node_modules
 /dist
-/config.toml
-/bilibili_cookie.json
-/history.json
-/history.json.bak
-/history.db
+/src-tauri/target
+
+# ── 运行时数据（含登录凭证与 API Key，绝不提交）──
+# 注意：这里刻意不使用根锚定（/config.toml）。开发模式下程序的工作目录是
+# src-tauri/，数据文件因此会落在 src-tauri/config.toml 等位置；历史上正是
+# 因为锚定写法导致真实的 config.toml 被提交进仓库。
+config.toml
+bilibili_cookie.json
+history.json
+history.json.bak
+history.db
 *.db-journal
 *.db-wal
 *.db-shm
-/video_cache.json
-/logs/
+video_cache.json
+logs
 *.log
+
+# 例外：cargo 配置是应该提交的源码，不能因为上面那条 config.toml 被一起忽略
+!src-tauri/.cargo/config.toml
+
+# ── 安装包 ──
 *.msi
 *.msi.*

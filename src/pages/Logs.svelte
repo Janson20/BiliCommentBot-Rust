@@ -4,9 +4,11 @@
   let filterLevel = "ALL";
   let search = "";
 
+  // 后端输出的级别为 DEBUG / INFO / WARN / ERROR / PREVIEW，比较时统一大写
   $: filtered = $logs.filter((l) => {
-    if (filterLevel !== "ALL" && l.level !== filterLevel) return false;
-    if (search && !l.msg.toLowerCase().includes(search.toLowerCase())) return false;
+    const level = String(l.level || "").toUpperCase();
+    if (filterLevel !== "ALL" && level !== filterLevel) return false;
+    if (search && !String(l.msg || "").toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   }).reverse();
 
@@ -26,18 +28,19 @@
 
 <div class="toolbar">
   <div class="filter-group">
-    <label>级别</label>
-    <select bind:value={filterLevel}>
+    <label for="log-level">级别</label>
+    <select id="log-level" bind:value={filterLevel}>
       <option value="ALL">全部</option>
       <option value="DEBUG">DEBUG</option>
       <option value="INFO">INFO</option>
-      <option value="WARNING">WARNING</option>
+      <option value="WARN">WARN</option>
       <option value="ERROR">ERROR</option>
+      <option value="PREVIEW">PREVIEW</option>
     </select>
   </div>
   <div class="filter-group search">
-    <label>搜索</label>
-    <input type="text" placeholder="搜索日志..." bind:value={search} />
+    <label for="log-search">搜索</label>
+    <input id="log-search" type="text" placeholder="搜索日志..." bind:value={search} />
   </div>
   <button class="btn-export" on:click={exportLogs}>📥 导出</button>
 </div>
@@ -87,9 +90,10 @@
   .time { color: #5a7a9a; flex-shrink: 0; }
   .level { flex-shrink: 0; font-weight: 600; min-width: 52px; }
   .log-info .level { color: #00b4d8; }
-  .log-warning .level { color: #f0c040; }
+  .log-warn .level { color: #f0c040; }
   .log-error .level { color: #e74c3c; }
   .log-debug .level { color: #5a7a9a; }
+  .log-preview .level { color: #8aa0b8; }
   .msg { color: #c0d0e0; word-break: break-all; }
   .empty { text-align: center; color: #5a7a9a; padding: 24px; }
 </style>

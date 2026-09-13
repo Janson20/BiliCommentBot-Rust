@@ -7,7 +7,6 @@
 /// - 自动刷新 (含 refresh_csrf 提取)
 /// - 本地持久化 (JSON)
 /// - 扫码登录 (生成二维码 + 轮询)
-
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use qrcode::QrCode;
@@ -31,7 +30,11 @@ const REFRESH_URL: &str = "https://passport.bilibili.com/x/passport-login/web/co
 const VERIFY_URL: &str = "https://api.bilibili.com/x/space/myinfo";
 const CORRESPOND_URL: &str = "https://www.bilibili.com/correspond/1/{}";
 
-pub const DEFAULT_COOKIE_FILE: &str = "bilibili_cookie.json";
+/// Cookie 文件的**文件名**。
+///
+/// 实际路径请用 [`crate::paths::cookie_file`]（用户数据目录下），
+/// 不要再用工作目录拼接 —— 那样正是历史上一份真实 Cookie 被提交进仓库的原因。
+pub const COOKIE_FILE_NAME: &str = "bilibili_cookie.json";
 
 // ════════════════════════════════════════════════════════════════
 //  数据模型
@@ -375,7 +378,7 @@ impl CookieManager {
 
     /// 获取 refresh_csrf（从 B站 correspond 接口 HTML 中提取）
     pub async fn get_refresh_csrf(&self) -> Result<String> {
-        let timestamp = current_timestamp() as u64;
+        let timestamp = current_timestamp();
         let md5_hash = format!("{:x}", md5::compute(timestamp.to_string()));
         let correspond_path = format!(
             "/apis/redirect/login?from=bilibili.com&timestamp={}&md5={}",

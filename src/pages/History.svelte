@@ -8,6 +8,12 @@
   let expanded = {};
   let loading = false;
 
+  // ── 清除历史：沿用「设置 → 清空所有数据」的输入确认流程 ──
+  let showClearConfirm = false;
+  let confirmText = "";
+  let clearing = false;
+  const CONFIRM_PHRASE = "确认清空";
+
   onMount(() => { loadHistory(); });
 
   async function loadHistory() {
@@ -25,15 +31,33 @@
     expanded = expanded;
   }
 
+  function openClearConfirm() {
+    confirmText = "";
+    showClearConfirm = true;
+  }
+
+  function cancelClear() {
+    showClearConfirm = false;
+    confirmText = "";
+  }
+
   async function doClear() {
+    if (confirmText !== CONFIRM_PHRASE) {
+      showToast("error", `请输入 "${CONFIRM_PHRASE}" 确认`);
+      return;
+    }
+    clearing = true;
     try {
       await clearHistory();
       groups = [];
       expanded = {};
+      showClearConfirm = false;
+      confirmText = "";
       showToast("success", "历史已清除");
     } catch (e) {
       showToast("error", "清除失败: " + e);
     }
+    clearing = false;
   }
 </script>
 
@@ -42,8 +66,34 @@
 <div class="toolbar">
   <span class="total">{loading ? "加载中..." : `共 ${groups.length} 天`}</span>
   <button class="btn-refresh" on:click={loadHistory}>🔄 刷新</button>
-  <button class="btn-danger" on:click={doClear}>🗑 清除历史</button>
+  <button class="btn-danger" on:click={openClearConfirm} disabled={clearing}>🗑 清除历史...</button>
 </div>
+
+{#if showClearConfirm}
+  <div class="confirm-panel">
+    <p class="confirm-desc">
+      此操作将清空全部回复历史记录，<strong>不可撤销</strong>。<br />
+      请输入 "<strong>{CONFIRM_PHRASE}</strong>" 以确认：
+    </p>
+    <div class="confirm-row">
+      <input
+        type="text"
+        class="confirm-input"
+        bind:value={confirmText}
+        placeholder={CONFIRM_PHRASE}
+        disabled={clearing}
+      />
+      <button
+        class="btn-danger"
+        on:click={doClear}
+        disabled={clearing || confirmText !== CONFIRM_PHRASE}
+      >
+        {clearing ? "清除中..." : "确认清除"}
+      </button>
+      <button class="btn-refresh" on:click={cancelClear} disabled={clearing}>取消</button>
+    </div>
+  </div>
+{/if}
 
 <div class="cards">
   {#each groups as group (group.date)}
@@ -85,6 +135,21 @@
     background: #e74c3c15; color: #e74c3c; cursor: pointer; font-size: 0.82rem;
   }
   .btn-danger:hover { background: #e74c3c25; }
+  .btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+  .confirm-panel {
+    background: #2a1620; border: 1px solid #e74c3c55; border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .confirm-desc { color: #e07070; font-size: 0.82rem; line-height: 1.6; margin-bottom: 10px; }
+  .confirm-desc strong { color: #e74c3c; }
+  .confirm-row { display: flex; align-items: center; gap: 10px; }
+  .confirm-input {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid #c0392b;
+    background: #0d1b2a; color: #e0e8f0; font-size: 0.85rem; outline: none;
+    width: 200px;
+  }
+  .confirm-input:focus { border-color: #e74c3c; }
+  .confirm-input:disabled { opacity: 0.6; }
   .cards { display: flex; flex-direction: column; gap: 8px; }
   .card {
     background: #16213e; border: 1px solid #1e3a5f; border-radius: 10px;

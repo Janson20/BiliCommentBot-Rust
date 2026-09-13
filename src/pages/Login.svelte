@@ -8,6 +8,7 @@
   let polling = false;
   let pollMsg = "";
   let pollTimer = null;
+  let qrLoading = false;   // 正在请求二维码，避免重复点击产生多个轮询
 
   // 手动输入
   let manualMode = false;
@@ -28,6 +29,12 @@
   }
 
   async function startQrLogin() {
+    if (qrLoading) return;
+    qrLoading = true;
+    stopPolling();        // 重新生成前先停掉旧计时器，避免重复轮询
+    qrcodeKey = "";
+    qrBase64 = "";
+    pollMsg = "";
     try {
       const r = await generateQrcode();
       qrBase64 = r.qrcode_base64;
@@ -36,6 +43,7 @@
     } catch (e) {
       showToast("error", "获取二维码失败: " + e);
     }
+    qrLoading = false;
   }
 
   function startPolling() {
@@ -47,12 +55,15 @@
   function stopPolling() {
     polling = false;
     if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
   }
 
   async function poll() {
     if (!polling || !qrcodeKey) return;
+    const key = qrcodeKey;   // 二维码被重新生成后丢弃过期响应，避免重复计时器
     try {
-      const r = await pollQrLogin(qrcodeKey);
+      const r = await pollQrLogin(key);
+      if (key !== qrcodeKey || !polling) return;
       if (r.code === 0) {
         // 登录成功
         stopPolling();
@@ -61,16 +72,22 @@
         return;
       }
       if (r.code === 86038) {
-        pollMsg = "二维码已过期，请重新生成";
+        // 过期：清掉二维码，让「生成二维码」按钮重现，不留死胡同
         stopPolling();
+        qrcodeKey = "";
+        qrBase64 = "";
+        pollMsg = "二维码已过期，请点击「生成二维码」重新登录";
         return;
       }
       if (r.code === 86090 || r.code === 86101) {
         pollMsg = "已扫描，请在手机上确认...";
       }
     } catch (_) {
-      pollMsg = "轮询出错了，请重试";
+      if (key !== qrcodeKey || !polling) return; // 已重新生成，忽略旧请求的报错
       stopPolling();
+      qrcodeKey = "";
+      qrBase64 = "";
+      pollMsg = "轮询出错了，请点击「生成二维码」重试";
       return;
     }
     pollTimer = setTimeout(poll, 2000);
@@ -82,9 +99,16 @@
       return;
     }
     try {
-      await setCookieManually(manualCookie, manualRefreshToken || null);
-      showToast("success", "Cookie已保存");
-      await checkLogin();
+      // 后端已改为「先校验再落盘」，返回值与 verify_cookie 同构，无需二次校验
+      const r = await setCookieManually(manualCookie, manualRefreshToken || null);
+      if (r?.valid) {
+        // 直接用返回值更新登录状态，不再多打一次 verify_cookie
+        loginStatus.set({ loggedIn: true, uname: r.uname || null, uid: r.uid || null });
+        showToast("success", r.message || "Cookie已保存并验证通过");
+      } else {
+        const why = r?.message ? `：${r.message}` : "";
+        showToast("error", `Cookie 验证未通过${why}，原有登录信息未被修改`);
+      }
     } catch (e) {
       showToast("error", "设置Cookie失败: " + e);
     }
@@ -133,30 +157,40 @@
 
 {#if !manualMode}
   <div class="qr-section">
-    {#if qrBase64}
-      <div class="qr-wrapper">
+    <div class="qr-wrapper">
+      {#if qrBase64}
         <img src={qrBase64} alt="QR Code" />
-        {#if pollMsg}
-          <div class="poll-msg">{pollMsg}</div>
+      {/if}
+      {#if pollMsg}
+        <div class="poll-msg">{pollMsg}</div>
+      {/if}
+      <div class="qr-actions">
+        {#if qrBase64}
+          <button class="btn-outline" on:click={startQrLogin} disabled={qrLoading}>
+            {qrLoading ? "⏳ 生成中..." : "🔄 重新生成二维码"}
+          </button>
+        {:else}
+          <button class="btn-primary" on:click={startQrLogin} disabled={qrLoading}>
+            {qrLoading ? "⏳ 生成中..." : "📱 生成二维码"}
+          </button>
         {/if}
       </div>
-    {:else}
-      <button class="btn-primary" on:click={startQrLogin}>📱 生成二维码</button>
-    {/if}
+    </div>
   </div>
 {:else}
   <div class="manual-section">
     <div class="form-group">
-      <label>Cookie 字符串</label>
+      <label for="login-cookie">Cookie 字符串</label>
       <textarea
+        id="login-cookie"
         bind:value={manualCookie}
         placeholder="SESSDATA=xxx; bili_jct=xxx; DedeUserID=xxx; ..."
         rows="4"
       ></textarea>
     </div>
     <div class="form-group">
-      <label>Refresh Token（可选）</label>
-      <input type="text" bind:value={manualRefreshToken} placeholder="刷新令牌" />
+      <label for="login-refresh-token">Refresh Token（可选）</label>
+      <input id="login-refresh-token" type="text" bind:value={manualRefreshToken} placeholder="刷新令牌" />
     </div>
     <button class="btn-primary" on:click={handleManualSubmit}>💾 保存</button>
   </div>
@@ -192,11 +226,20 @@
   .qr-wrapper { text-align: center; }
   .qr-wrapper img { width: 200px; height: 200px; border-radius: 10px; background: #fff; padding: 8px; }
   .poll-msg { margin-top: 10px; color: #00b4d8; font-size: 0.85rem; }
+  .qr-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
   .btn-primary {
     padding: 10px 24px; border: none; border-radius: 8px;
     background: #00b4d8; color: #fff; font-weight: 600; cursor: pointer;
   }
   .btn-primary:hover { opacity: 0.85; }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-outline {
+    padding: 10px 18px; border: 1px solid #1e3a5f; border-radius: 8px;
+    background: #0d1b2a; color: #b0c4de; font-size: 0.85rem;
+    cursor: pointer; transition: 0.15s;
+  }
+  .btn-outline:hover { background: #1e3a5f; color: #e0e8f0; }
+  .btn-outline:disabled { opacity: 0.5; cursor: not-allowed; }
   .manual-section { max-width: 500px; }
   .form-group { margin-bottom: 14px; }
   .form-group label {

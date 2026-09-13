@@ -1,8 +1,9 @@
 <script>
-  import { isRunning, botStats, logs } from "../lib/stores.js";
+  import { isRunning, botStats, logs, videos, showToast } from "../lib/stores.js";
   import { startBot, stopBot, getVideoList, triggerManualCheck } from "../lib/api.js";
 
   let loading = false;
+  let videosLoading = false;
 
   async function handleToggle() {
     loading = true;
@@ -13,26 +14,35 @@
         await startBot();
       }
     } catch (e) {
-      console.error(e);
+      showToast("error", String(e));
     }
     loading = false;
   }
 
   async function refreshVideos() {
+    videosLoading = true;
     try {
-      await getVideoList();
+      const list = await getVideoList();
+      videos.set(Array.isArray(list) ? list : list?.videos || []);
     } catch (e) {
-      console.error(e);
+      showToast("error", String(e));
     }
+    videosLoading = false;
   }
 
   async function manualCheck() {
     try {
       await triggerManualCheck();
     } catch (e) {
-      console.error(e);
+      showToast("error", String(e));
     }
   }
+
+  // 简介可能很长，列表里只显示摘要
+  const truncate = (s, n) => {
+    const t = String(s ?? "");
+    return t.length > n ? t.slice(0, n) + "…" : t;
+  };
 
   // 最近日志
   $: recentLogs = $logs.slice(-6).reverse();
@@ -75,8 +85,35 @@
   >
     {loading ? "..." : $isRunning ? "⏹ 停止" : "▶ 启动"}
   </button>
-  <button class="btn-secondary" on:click={refreshVideos}>🔄 刷新视频列表</button>
+  <button class="btn-secondary" on:click={refreshVideos} disabled={videosLoading}>
+    {videosLoading ? "⏳ 刷新中..." : "🔄 刷新视频列表"}
+  </button>
   <button class="btn-secondary" on:click={manualCheck} disabled={!$isRunning}>⚡ 立即检查</button>
+</div>
+
+<div class="section">
+  <h2>🎬 视频列表{#if $videos.length > 0}<span class="section-note">共 {$videos.length} 个</span>{/if}</h2>
+  {#if videosLoading}
+    <div class="empty">正在获取视频列表...</div>
+  {:else if $videos.length === 0}
+    <div class="empty">暂无数据，点击上方「🔄 刷新视频列表」获取</div>
+  {:else}
+    <div class="video-list">
+      {#each $videos as v}
+        <div class="video-item">
+          <div class="video-title" title={v.title}>{truncate(v.title, 40)}</div>
+          {#if v.desc}
+            <div class="video-desc" title={v.desc}>{truncate(v.desc, 60)}</div>
+          {/if}
+          <div class="video-meta">
+            <span class="bvid">{v.bvid}</span>
+            <span>播放 {v.play ?? 0}</span>
+            <span>评论 {v.comment ?? 0}</span>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <div class="section">
@@ -135,8 +172,29 @@
     background: #16213e; color: #b0c4de; cursor: pointer; font-size: 0.9rem;
   }
   .btn-secondary:hover { background: #1e3a5f; }
+  .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
   .section { margin-top: 8px; }
   h2 { font-size: 1.05rem; color: #8aa0b8; margin-bottom: 10px; }
+  .section-note { font-size: 0.78rem; color: #5a7a9a; margin-left: 8px; font-weight: 400; }
+  .video-list {
+    background: #0d1b2a; border-radius: 8px; padding: 8px 14px;
+    max-height: 220px; overflow-y: auto;
+  }
+  .video-item { padding: 7px 0; border-bottom: 1px solid #152238; }
+  .video-item:last-child { border: none; }
+  .video-title {
+    font-size: 0.85rem; color: #e0e8f0; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .video-desc {
+    font-size: 0.76rem; color: #5a7a9a; margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .video-meta {
+    display: flex; gap: 12px; margin-top: 4px; flex-wrap: wrap;
+    font-size: 0.75rem; color: #8aa0b8; font-family: "Consolas", monospace;
+  }
+  .video-meta .bvid { color: #00b4d8; }
   .log-list {
     background: #0d1b2a; border-radius: 8px; padding: 10px 14px;
     max-height: 220px; overflow-y: auto;
@@ -152,6 +210,7 @@
   .log-warn .log-level { color: #f0c040; }
   .log-error .log-level { color: #e74c3c; }
   .log-debug .log-level { color: #5a7a9a; }
+  .log-preview .log-level { color: #8aa0b8; }
   .log-msg { color: #c0d0e0; word-break: break-all; }
   .empty { text-align: center; color: #5a7a9a; padding: 16px; }
 </style>

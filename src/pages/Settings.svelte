@@ -7,6 +7,7 @@
     getConfig,
     saveConfig,
     clearAllData,
+    getDataFiles,
     getAutostartStatus,
     setAutostart,
   } from "../lib/api.js";
@@ -14,23 +15,53 @@
 
   let pwdInput = "";
   let pwdConfirm = "";
+  let hasPassword = false;
+  let pwdSaving = false;
   let ollamaStatus = "未检测";
   let ollamaModels = [];
   let checking = false;
 
   async function handleSetPwd() {
+    if (pwdSaving) return;
+    // 留空不再等于「清除密码」：避免把 UI 占位符当成新密码提交
+    if (!pwdInput) {
+      showToast("error", hasPassword ? "密码未修改：留空保存不会改动现有密码" : "请输入新密码");
+      return;
+    }
+    if (!pwdConfirm) {
+      showToast("error", "请再次输入密码以确认");
+      return;
+    }
     if (pwdInput !== pwdConfirm) {
       showToast("error", "两次密码不一致");
       return;
     }
+    pwdSaving = true;
     try {
       await setPassword(pwdInput);
-      showToast("success", pwdInput ? "密码已设置" : "密码已清除");
+      hasPassword = true;
       pwdInput = "";
       pwdConfirm = "";
+      showToast("success", "密码已设置，下次启动需要输入密码");
     } catch (e) {
       showToast("error", "设置失败: " + e);
     }
+    pwdSaving = false;
+  }
+
+  async function clearPassword() {
+    if (pwdSaving) return;
+    pwdSaving = true;
+    try {
+      await setPassword("");
+      hasPassword = false;
+      pwdInput = "";
+      pwdConfirm = "";
+      showToast("success", "密码已清除，下次启动不再需要输入密码");
+    } catch (e) {
+      showToast("error", "清除失败: " + e);
+    }
+    pwdSaving = false;
   }
 
   async function detectOllama() {
@@ -54,6 +85,8 @@
   let autostartCommand = "";
   let autostartBusy = false;
   let closeActionBusy = false;
+  let autoStartBot = true;      // app.auto_start_bot，默认 true
+  let autoStartBusy = false;
 
   const CLOSE_ACTION_LABELS = {
     ask: "每次询问",
@@ -64,10 +97,12 @@
   async function loadConfig() {
     try {
       const cfg = await getConfig();
-      if (cfg.auth?.enabled) {
-        pwdInput = "••••••"; // placeholder for existing
-      }
+      // 字段一律留空：只提示「已设置」，真实密码需要用户重新输入才会被覆盖
+      hasPassword = !!(cfg.auth?.enabled && cfg.auth?.password);
+      pwdInput = "";
+      pwdConfirm = "";
       closeAction = cfg.app?.close_action || "ask";
+      autoStartBot = cfg.app?.auto_start_bot !== false;   // 缺省视为开启
     } catch (_) {}
 
     // 开机自启状态以后端（注册表）为准
@@ -106,6 +141,27 @@
     autostartBusy = false;
   }
 
+  async function toggleAutoStartBot(e) {
+    const next = e.target.checked;
+    const prev = autoStartBot;
+    autoStartBot = next;
+    autoStartBusy = true;
+    try {
+      const cfg = await getConfig();
+      if (!cfg.app) cfg.app = {};
+      cfg.app.auto_start_bot = next;
+      await saveConfig(cfg);
+      showToast(
+        "success",
+        next ? "已开启：启动程序后自动运行机器人" : "已关闭：需要手动点击「启动」"
+      );
+    } catch (err) {
+      autoStartBot = prev;
+      showToast("error", "保存失败: " + err);
+    }
+    autoStartBusy = false;
+  }
+
   async function changeCloseAction(e) {
     const next = e.target.value;
     const prev = closeAction;
@@ -131,18 +187,37 @@
   let showClearConfirm = false;
   let confirmText = "";
   let clearResult = null;
+  let dataFiles = null;
+  let dataFilesLoading = false;
   const CONFIRM_PHRASE = "确认清空";
 
-  function openClearConfirm() {
+  function formatSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  }
+
+  async function openClearConfirm() {
     confirmText = "";
     clearResult = null;
     showClearConfirm = true;
+    // 确认前先列出将被移入回收站的文件
+    dataFiles = null;
+    dataFilesLoading = true;
+    try {
+      dataFiles = await getDataFiles();
+    } catch (e) {
+      dataFiles = { error: String(e) };
+    }
+    dataFilesLoading = false;
   }
 
   function cancelClear() {
     showClearConfirm = false;
     confirmText = "";
     clearResult = null;
+    dataFiles = null;
   }
 
   async function executeClear() {
@@ -153,7 +228,12 @@
     clearing = true;
     try {
       clearResult = await clearAllData();
-      showToast("success", `已清空 ${clearResult.trashed} 个文件到回收站，应用即将退出`);
+      // total === 0 表示没有可清理的文件，此时后端不会退出程序
+      if ((clearResult?.total ?? 0) === 0) {
+        showToast("success", "没有可清理的数据文件，应用不会退出");
+      } else {
+        showToast("success", `已清空 ${clearResult.trashed} 个文件到回收站，应用即将退出`);
+      }
     } catch (e) {
       clearResult = { error: String(e) };
       showToast("error", "清空失败: " + e);
@@ -166,12 +246,32 @@
 
 <div class="section">
   <h2>🔒 登录密码</h2>
-  <p class="desc">设置后访问需要密码验证；留空则取消密码保护</p>
+  <p class="desc">设置后访问需要密码验证；留空保存不会修改现有密码</p>
   <div class="form-row">
-    <input type="password" placeholder="新密码" bind:value={pwdInput} />
-    <input type="password" placeholder="确认密码" bind:value={pwdConfirm} />
-    <button class="btn-save" on:click={handleSetPwd}>保存</button>
+    <input
+      type="password"
+      placeholder="新密码"
+      bind:value={pwdInput}
+      disabled={pwdSaving}
+      autocomplete="new-password"
+    />
+    <input
+      type="password"
+      placeholder="确认密码"
+      bind:value={pwdConfirm}
+      disabled={pwdSaving}
+      autocomplete="new-password"
+    />
+    <button class="btn-save" on:click={handleSetPwd} disabled={pwdSaving}>
+      {pwdSaving ? "保存中..." : "保存"}
+    </button>
+    {#if hasPassword}
+      <button class="btn-secondary" on:click={clearPassword} disabled={pwdSaving}>清除密码</button>
+    {/if}
   </div>
+  {#if hasPassword}
+    <p class="hint pwd-hint">已设置（留空则不修改）</p>
+  {/if}
 </div>
 
 <div class="section">
@@ -200,6 +300,21 @@
     <p class="cmd-hint">自启命令：<code>{autostartCommand}</code></p>
   {/if}
 
+  <label class="switch-row mt" class:disabled={autoStartBusy}>
+    <input
+      type="checkbox"
+      checked={autoStartBot}
+      disabled={autoStartBusy}
+      on:change={toggleAutoStartBot}
+    />
+    <span class="switch-text">
+      启动时自动运行机器人
+      <span class="hint">
+        配置完整（已登录 + 已配置 AI）时，程序启动即开始工作；关闭后需手动点击「启动」
+      </span>
+    </span>
+  </label>
+
   <div class="form-row close-row">
     <span class="row-label">关闭主窗口时</span>
     <select
@@ -224,13 +339,38 @@
     <h2>⚠️ 清空所有数据</h2>
     <p class="desc danger-desc">
       此操作将停止机器人、清空所有配置、回复历史、Cookie、日志文件到系统回收站。<br />
-      清空后应用将自动退出。此操作不可撤销！
+      清空后应用将自动退出；若没有可清理的文件则不会退出。此操作不可撤销！
     </p>
+
+    {#if dataFilesLoading}
+      <p class="hint">正在读取待清理的文件...</p>
+    {:else if dataFiles}
+      {#if dataFiles.error}
+        <p class="error-text">读取待清理文件失败：{dataFiles.error}</p>
+      {:else}
+        <div class="file-box">
+          <p class="file-dir">数据目录：<code>{dataFiles.data_dir}</code></p>
+          {#if dataFiles.files?.length}
+            {#each dataFiles.files as f}
+              <div class="file-row">
+                <span class="file-path">{f.path}</span>
+                <span class="file-size">{f.exists ? formatSize(f.size) : "不存在"}</span>
+              </div>
+            {/each}
+            <p class="hint">共 {dataFiles.files.length} 个文件将被移入回收站</p>
+          {:else}
+            <p class="hint">当前没有可清理的数据文件，清理后应用不会退出</p>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
     <div class="form-col">
-      <label class="confirm-label">
+      <label class="confirm-label" for="clear-confirm-input">
         请输入 "<strong>{CONFIRM_PHRASE}</strong>" 以确认：
       </label>
       <input
+        id="clear-confirm-input"
         type="text"
         class="confirm-input"
         bind:value={confirmText}
@@ -323,6 +463,8 @@
     padding: 8px 20px; border: none; border-radius: 6px;
     background: #00b4d8; color: #fff; font-weight: 600; cursor: pointer;
   }
+  .btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pwd-hint { display: block; margin-top: 6px; }
   .btn-secondary {
     padding: 8px 18px; border: 1px solid #1e3a5f; border-radius: 6px;
     background: #16213e; color: #b0c4de; cursor: pointer; font-size: 0.85rem;
@@ -348,6 +490,7 @@
     background: #16213e; max-width: 620px;
   }
   .switch-row.disabled { opacity: 0.6; cursor: not-allowed; }
+  .switch-row.mt { margin-top: 12px; }
   .switch-row input[type="checkbox"] {
     width: 16px; height: 16px; margin-top: 2px; flex: none;
     accent-color: #00b4d8; cursor: pointer;
@@ -400,6 +543,22 @@
   }
   .confirm-input:focus { border-color: #e74c3c; }
   .result-box { margin-top: 10px; padding: 10px; border-radius: 6px; background: #16213e; }
+  .file-box {
+    background: #16213e; border: 1px solid #1e3a5f; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 12px; max-height: 170px; overflow-y: auto;
+  }
+  .file-dir { font-size: 0.78rem; color: #8aa0b8; margin-bottom: 6px; word-break: break-all; }
+  .file-dir code {
+    background: #0d1b2a; border: 1px solid #1e3a5f; border-radius: 4px;
+    padding: 1px 5px; color: #b0c4de;
+  }
+  .file-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    font-size: 0.75rem; color: #b0c4de; padding: 2px 0;
+    font-family: "Consolas", monospace;
+  }
+  .file-path { word-break: break-all; }
+  .file-size { color: #5a7a9a; flex-shrink: 0; }
   .success-text { color: #27ae60; font-size: 0.82rem; }
   .error-text { color: #e74c3c; font-size: 0.82rem; }
   .warn-text { color: #f39c12; font-size: 0.78rem; }

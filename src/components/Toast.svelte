@@ -3,9 +3,9 @@
 </script>
 
 {#if $toast}
-  <div class="toast toast-{$toast.type}">
+  <div class="toast toast-{$toast.type}" role="alert" aria-live="polite">
     <span>{$toast.text}</span>
-    <button on:click={() => toast.set(null)}>&times;</button>
+    <button type="button" aria-label="关闭" on:click={() => toast.set(null)}>&times;</button>
   </div>
 {/if}
 

@@ -64,6 +64,11 @@ impl Default for RateLimitConfig {
     }
 }
 
+/// HTTP 响应缓存配置。
+///
+/// ⚠️ 当前**未实现**：Rust 版没有 Python 版的 GET 响应缓存层，这两个字段仅为了
+/// 兼容旧 `config.toml` 而保留解析，不产生任何行为。前端已不再展示它们
+/// （避免"界面有开关但后端不读"的情况）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
     #[serde(default = "default_cache_expire")]
@@ -135,6 +140,16 @@ pub struct OllamaConfig {
     pub model: String,
     #[serde(default = "default_ollama_timeout")]
     pub timeout_secs: u64,
+    /// 系统提示词。留空则沿用 `[deepseek].system_prompt`，
+    /// 避免「换了 Ollama 之后自定义人设就失效」。
+    #[serde(default)]
+    pub system_prompt: String,
+    /// 单次生成的最大 token 数
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// 采样温度
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
 }
 
 impl Default for OllamaConfig {
@@ -143,6 +158,9 @@ impl Default for OllamaConfig {
             base_url: default_ollama_base_url(),
             model: default_ollama_model(),
             timeout_secs: default_ollama_timeout(),
+            system_prompt: String::new(),
+            max_tokens: default_max_tokens(),
+            temperature: default_temperature(),
         }
     }
 }
@@ -202,6 +220,9 @@ pub struct ReplyConfig {
     pub enabled: bool,
     #[serde(default)]
     pub prefix: String,
+    /// ⚠️ 保留字段，**不产生行为**：去重始终生效（由 `history.db` 的
+    /// `comment_id UNIQUE` 保证）。Python 版里这个开关同样是惰性的，
+    /// 前端已不再展示，以免给出"关掉就会回复全部旧评论"的错误预期。
     #[serde(default = "default_true")]
     pub only_new: bool,
     #[serde(default = "default_max_process")]
@@ -287,16 +308,13 @@ pub struct AuthConfig {
 /// AI 提供商选择
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AiProvider {
+    #[default]
     Deepseek,
     Ollama,
 }
 
-impl Default for AiProvider {
-    fn default() -> Self {
-        AiProvider::Deepseek
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AiConfig {
@@ -315,7 +333,7 @@ pub enum CloseAction {
     Exit,
 }
 
-/// 桌面程序行为配置（开机自启 / 关闭窗口行为）
+/// 桌面程序行为配置（开机自启 / 关闭窗口行为 / 首次向导状态 / 启动即运行）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppUiConfig {
     /// 开机自启：写入注册表 Run 项，开机后静默启动到系统托盘
@@ -324,6 +342,13 @@ pub struct AppUiConfig {
     /// 关闭主窗口时的行为：ask / tray / exit
     #[serde(default = "default_close_action")]
     pub close_action: String,
+    /// 启动时若配置已完整（已登录 + 已配置 AI）就自动开始运行机器人。
+    /// 开机自启只负责把程序拉起来，没有这一项就等于"开机自启但机器人不工作"。
+    #[serde(default = "default_true")]
+    pub auto_start_bot: bool,
+    /// 是否已完成首次配置向导；完成后不再自动弹出向导
+    #[serde(default)]
+    pub setup_complete: bool,
 }
 
 impl Default for AppUiConfig {
@@ -331,6 +356,8 @@ impl Default for AppUiConfig {
         Self {
             autostart: false,
             close_action: default_close_action(),
+            auto_start_bot: true,
+            setup_complete: false,
         }
     }
 }
@@ -421,10 +448,13 @@ struct ConfigState {
 
 const CONFIG_FILE_NAME: &str = "config.toml";
 
-impl AppConfig {
-    /// 新建配置管理器，自动尝试从当前目录加载 config.toml
+impl AppConfig {    /// 新建配置管理器，自动尝试从用户数据目录加载 config.toml
     pub fn new() -> Self {
-        let file_path = Self::default_config_path();
+        Self::with_path(Self::default_config_path())
+    }
+
+    /// 指定配置文件路径创建（测试与迁移用）
+    pub fn with_path(file_path: PathBuf) -> Self {
         let config = Self::load_or_default(&file_path);
         Self {
             inner: RwLock::new(ConfigState { config, file_path }),
@@ -467,10 +497,9 @@ impl AppConfig {
 
     // ── 内部方法 ──
 
+    /// 配置文件在用户数据目录下（不使用 CWD，原因见 `paths` 模块文档）
     fn default_config_path() -> PathBuf {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(CONFIG_FILE_NAME)
+        crate::paths::data_dir().join(CONFIG_FILE_NAME)
     }
 
     fn load_or_default(path: &PathBuf) -> RawConfig {
@@ -564,5 +593,50 @@ password = ""
         assert_eq!(parsed.bilibili.uid, "123");
         assert!(!parsed.app.autostart);
         assert_eq!(parsed.app.close_action_kind(), CloseAction::Ask);
+    }
+
+    /// 首次向导标记：默认 false，写入后能正确往返（旧配置缺该字段时按 false 处理）
+    #[test]
+    fn test_setup_complete_roundtrip() {
+        let cfg = RawConfig::default();
+        assert!(!cfg.app.setup_complete);
+
+        let mut done = cfg.clone();
+        done.app.setup_complete = true;
+        let toml_str = toml::to_string_pretty(&done).unwrap();
+        assert!(toml_str.contains("setup_complete = true"));
+
+        let parsed: RawConfig = toml::from_str(&toml_str).unwrap();
+        assert!(parsed.app.setup_complete);
+
+        // 手写配置未写该字段时不应解析失败
+        let manual: RawConfig = toml::from_str("[app]\nautostart = true\n").unwrap();
+        assert!(manual.app.autostart);
+        assert!(!manual.app.setup_complete);
+    }
+
+    /// 配置文件必须落在用户数据目录，绝不能是 CWD
+    /// （历史上正是 CWD 相对路径导致真实凭证被写进源码目录并提交）
+    #[test]
+    fn test_default_config_path_is_under_data_dir() {
+        let path = AppConfig::default_config_path();
+        assert!(path.is_absolute(), "配置路径应为绝对路径: {:?}", path);
+        assert_eq!(path, crate::paths::config_file());
+        assert!(
+            path.starts_with(crate::paths::data_dir()),
+            "配置路径应位于数据目录下: {:?}",
+            path
+        );
+    }
+
+    /// 旧配置缺 `auto_start_bot` 时默认开启，保证「开机自启」真的会让机器人工作
+    #[test]
+    fn test_auto_start_bot_default_and_legacy_parse() {
+        assert!(AppUiConfig::default().auto_start_bot);
+        let legacy: RawConfig = toml::from_str("[app]\nautostart = true\n").unwrap();
+        assert!(legacy.app.auto_start_bot);
+
+        let off: RawConfig = toml::from_str("[app]\nauto_start_bot = false\n").unwrap();
+        assert!(!off.app.auto_start_bot);
     }
 }

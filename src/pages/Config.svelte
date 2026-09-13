@@ -76,45 +76,45 @@
       {#if activeTab === "bilibili"}
         <h2>B站API配置</h2>
         <div class="field">
-          <label>Cookie</label>
-          <textarea rows="2" value={field(cfg.bilibili, "cookie")}
+          <label for="cfg-bili-cookie">Cookie</label>
+          <textarea id="cfg-bili-cookie" rows="2" value={field(cfg.bilibili, "cookie")}
             on:input={(e) => setField(cfg.bilibili, "cookie", e.target.value)}></textarea>
         </div>
-        <div class="field"><label>Refresh Token</label><input type="text" value={field(cfg.bilibili, "refresh_token")}
+        <div class="field"><label for="cfg-bili-refresh">Refresh Token</label><input id="cfg-bili-refresh" type="text" value={field(cfg.bilibili, "refresh_token")}
           on:input={(e) => setField(cfg.bilibili, "refresh_token", e.target.value)} /></div>
-        <div class="field"><label>用户UID</label><input type="text" value={field(cfg.bilibili, "uid")}
+        <div class="field"><label for="cfg-bili-uid">用户UID</label><input id="cfg-bili-uid" type="text" value={field(cfg.bilibili, "uid")}
           on:input={(e) => setField(cfg.bilibili, "uid", e.target.value)} /></div>
-        <div class="field"><label>检查间隔（秒）</label><input type="number" value={numField(cfg.bilibili, "check_interval")}
+        <div class="field"><label for="cfg-bili-interval">检查间隔（秒）</label><input id="cfg-bili-interval" type="number" value={numField(cfg.bilibili, "check_interval")}
           on:input={(e) => setField(cfg.bilibili, "check_interval", Number(e.target.value))} /></div>
-        <div class="field"><label>评论最大页数</label><input type="number" value={numField(cfg.bilibili, "max_comment_pages")}
+        <div class="field"><label for="cfg-bili-max-comment">评论最大页数</label><input id="cfg-bili-max-comment" type="number" value={numField(cfg.bilibili, "max_comment_pages")}
           on:input={(e) => setField(cfg.bilibili, "max_comment_pages", Number(e.target.value))} /></div>
-        <div class="field"><label>视频最大页数</label><input type="number" value={numField(cfg.bilibili, "max_video_pages")}
+        <div class="field"><label for="cfg-bili-max-video">视频最大页数</label><input id="cfg-bili-max-video" type="number" value={numField(cfg.bilibili, "max_video_pages")}
           on:input={(e) => setField(cfg.bilibili, "max_video_pages", Number(e.target.value))} /></div>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.bilibili, "auto_refresh_cookie")}
           on:change={(e) => setField(cfg.bilibili, "auto_refresh_cookie", e.target.checked)} /> 自动刷新Cookie</label>
 
       {:else if activeTab === "deepseek"}
         <h2>DeepSeek API</h2>
-        <div class="field"><label>API Key <span class="hint">（以 sk- 开头，复制时勿带空格）</span></label><input type="text" value={field(cfg.deepseek, "api_key")}
+        <div class="field"><label for="cfg-ds-key">API Key <span class="hint">（以 sk- 开头，复制时勿带空格）</span></label><input id="cfg-ds-key" type="text" value={field(cfg.deepseek, "api_key")}
           on:input={(e) => setField(cfg.deepseek, "api_key", e.target.value)} /></div>
-        <div class="field"><label>API 地址</label><input type="text" value={field(cfg.deepseek, "base_url")}
+        <div class="field"><label for="cfg-ds-url">API 地址</label><input id="cfg-ds-url" type="text" value={field(cfg.deepseek, "base_url")}
           on:input={(e) => setField(cfg.deepseek, "base_url", e.target.value)} /></div>
-        <div class="field"><label>模型</label><input type="text" value={field(cfg.deepseek, "model")}
+        <div class="field"><label for="cfg-ds-model">模型</label><input id="cfg-ds-model" type="text" value={field(cfg.deepseek, "model")}
           on:input={(e) => setField(cfg.deepseek, "model", e.target.value)} /></div>
-        <div class="field"><label>最大Token</label><input type="number" value={numField(cfg.deepseek, "max_tokens")}
+        <div class="field"><label for="cfg-ds-max-tokens">最大Token</label><input id="cfg-ds-max-tokens" type="number" value={numField(cfg.deepseek, "max_tokens")}
           on:input={(e) => setField(cfg.deepseek, "max_tokens", Number(e.target.value))} /></div>
-        <div class="field"><label>温度</label><input type="number" step="0.1" min="0" max="1" value={field(cfg.deepseek, "temperature")}
+        <div class="field"><label for="cfg-ds-temp">温度</label><input id="cfg-ds-temp" type="number" step="0.1" min="0" max="1" value={field(cfg.deepseek, "temperature")}
           on:input={(e) => setField(cfg.deepseek, "temperature", parseFloat(e.target.value) || 0.7)} /></div>
-        <div class="field"><label>系统提示词</label><textarea rows="3" value={field(cfg.deepseek, "system_prompt")}
+        <div class="field"><label for="cfg-ds-prompt">系统提示词</label><textarea id="cfg-ds-prompt" rows="3" value={field(cfg.deepseek, "system_prompt")}
           on:input={(e) => setField(cfg.deepseek, "system_prompt", e.target.value)}></textarea></div>
 
       {:else if activeTab === "ollama"}
         <h2>Ollama (本地模型)</h2>
-        <div class="field"><label>服务地址</label><input type="text" value={field(cfg.ollama, "base_url")}
+        <div class="field"><label for="cfg-ollama-url">服务地址</label><input id="cfg-ollama-url" type="text" value={field(cfg.ollama, "base_url")}
           on:input={(e) => setField(cfg.ollama, "base_url", e.target.value)} /></div>
-        <div class="field"><label>模型名</label><input type="text" value={field(cfg.ollama, "model")}
+        <div class="field"><label for="cfg-ollama-model">模型名</label><input id="cfg-ollama-model" type="text" value={field(cfg.ollama, "model")}
           on:input={(e) => setField(cfg.ollama, "model", e.target.value)} /></div>
-        <div class="field"><label>超时（秒）</label><input type="number" value={numField(cfg.ollama, "timeout_secs")}
+        <div class="field"><label for="cfg-ollama-timeout">超时（秒）</label><input id="cfg-ollama-timeout" type="number" value={numField(cfg.ollama, "timeout_secs")}
           on:input={(e) => setField(cfg.ollama, "timeout_secs", Number(e.target.value))} /></div>
 
       {:else if activeTab === "reply"}
@@ -123,20 +123,18 @@
           on:change={(e) => setField(cfg.reply, "enabled", e.target.checked)} /> 启用自动回复</label>
         <label class="checkbox dry"><input type="checkbox" checked={boolField(cfg.reply, "dry_run")}
           on:change={(e) => setField(cfg.reply, "dry_run", e.target.checked)} /> 🔍 预览模式：仅生成AI回复日志，不实际发表</label>
-        <div class="field"><label>回复前缀</label><input type="text" value={field(cfg.reply, "prefix")}
+        <div class="field"><label for="cfg-reply-prefix">回复前缀</label><input id="cfg-reply-prefix" type="text" value={field(cfg.reply, "prefix")}
           on:input={(e) => setField(cfg.reply, "prefix", e.target.value)} /></div>
-        <div class="field"><label>每次最多处理</label><input type="number" value={numField(cfg.reply, "max_process")}
+        <div class="field"><label for="cfg-reply-max">每次最多处理</label><input id="cfg-reply-max" type="number" value={numField(cfg.reply, "max_process")}
           on:input={(e) => setField(cfg.reply, "max_process", Number(e.target.value))} /></div>
-        <div class="field"><label>回复延迟（秒）</label><input type="number" value={numField(cfg.reply, "reply_delay")}
+        <div class="field"><label for="cfg-reply-delay">回复延迟（秒）</label><input id="cfg-reply-delay" type="number" value={numField(cfg.reply, "reply_delay")}
           on:input={(e) => setField(cfg.reply, "reply_delay", Number(e.target.value))} /></div>
-        <div class="field"><label>仅回复BVID</label><input type="text" value={field(cfg.reply, "only_bvid")}
+        <div class="field"><label for="cfg-reply-only-bvid">仅回复BVID</label><input id="cfg-reply-only-bvid" type="text" value={field(cfg.reply, "only_bvid")}
           on:input={(e) => setField(cfg.reply, "only_bvid", e.target.value)} /></div>
-        <div class="field"><label>上下文评论数</label><input type="number" value={numField(cfg.reply, "context_comments_count")}
+        <div class="field"><label for="cfg-reply-context">上下文评论数</label><input id="cfg-reply-context" type="number" value={numField(cfg.reply, "context_comments_count")}
           on:input={(e) => setField(cfg.reply, "context_comments_count", Number(e.target.value))} /></div>
-        <div class="field"><label>最大链式回复深度</label><input type="number" value={numField(cfg.reply, "max_reply_depth")}
+        <div class="field"><label for="cfg-reply-depth">最大链式回复深度</label><input id="cfg-reply-depth" type="number" value={numField(cfg.reply, "max_reply_depth")}
           on:input={(e) => setField(cfg.reply, "max_reply_depth", Number(e.target.value))} /></div>
-        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply, "only_new")}
-          on:change={(e) => setField(cfg.reply, "only_new", e.target.checked)} /> 仅回复新评论</label>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply, "like_enabled")}
           on:change={(e) => setField(cfg.reply, "like_enabled", e.target.checked)} /> 回复后点赞评论</label>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply, "chained_reply_enabled")}
@@ -149,12 +147,12 @@
         <h3 class="sub-title">关键词过滤</h3>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.keyword_filter, "enabled")}
           on:change={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "enabled", e.target.checked)} /> 启用关键词过滤</label>
-        <div class="field"><label>白名单关键词 <span class="hint">（逗号分隔，匹配才回复；留空不限制）</span></label><input type="text" value={field(cfg.reply?.keyword_filter, "whitelist")}
+        <div class="field"><label for="cfg-kf-whitelist">白名单关键词 <span class="hint">（逗号分隔，匹配才回复；留空不限制）</span></label><input id="cfg-kf-whitelist" type="text" value={field(cfg.reply?.keyword_filter, "whitelist")}
           on:input={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "whitelist", e.target.value)} /></div>
-        <div class="field"><label>黑名单关键词 <span class="hint">（逗号分隔，匹配任一则跳过）</span></label><input type="text" value={field(cfg.reply?.keyword_filter, "blacklist")}
+        <div class="field"><label for="cfg-kf-blacklist">黑名单关键词 <span class="hint">（逗号分隔，匹配任一则跳过）</span></label><input id="cfg-kf-blacklist" type="text" value={field(cfg.reply?.keyword_filter, "blacklist")}
           on:input={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "blacklist", e.target.value)} /></div>
-        <div class="field"><label>白名单匹配模式</label>
-          <select value={field(cfg.reply?.keyword_filter, "mode") || "any"}
+        <div class="field"><label for="cfg-kf-mode">白名单匹配模式</label>
+          <select id="cfg-kf-mode" value={field(cfg.reply?.keyword_filter, "mode") || "any"}
             on:change={(e) => setField(ensureObj(cfg.reply, "keyword_filter"), "mode", e.target.value)}>
             <option value="any">any（任一匹配）</option>
             <option value="all">all（全部匹配）</option>
@@ -165,55 +163,51 @@
         <h3 class="sub-title">评论长度过滤</h3>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.length_filter, "enabled")}
           on:change={(e) => setField(ensureObj(cfg.reply, "length_filter"), "enabled", e.target.checked)} /> 启用长度过滤</label>
-        <div class="field"><label>最短长度 <span class="hint">（0=不限制）</span></label><input type="number" value={numField(cfg.reply?.length_filter, "min_length")}
+        <div class="field"><label for="cfg-lf-min">最短长度 <span class="hint">（0=不限制）</span></label><input id="cfg-lf-min" type="number" value={numField(cfg.reply?.length_filter, "min_length")}
           on:input={(e) => setField(ensureObj(cfg.reply, "length_filter"), "min_length", Number(e.target.value))} /></div>
-        <div class="field"><label>最长长度 <span class="hint">（0=不限制）</span></label><input type="number" value={numField(cfg.reply?.length_filter, "max_length")}
+        <div class="field"><label for="cfg-lf-max">最长长度 <span class="hint">（0=不限制）</span></label><input id="cfg-lf-max" type="number" value={numField(cfg.reply?.length_filter, "max_length")}
           on:input={(e) => setField(ensureObj(cfg.reply, "length_filter"), "max_length", Number(e.target.value))} /></div>
 
         <h3 class="sub-title">用户过滤</h3>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.reply?.user_filter, "enabled")}
           on:change={(e) => setField(ensureObj(cfg.reply, "user_filter"), "enabled", e.target.checked)} /> 启用用户过滤</label>
-        <div class="field"><label>白名单 UID <span class="hint">（逗号分隔，仅回复这些用户）</span></label><input type="text" value={field(cfg.reply?.user_filter, "whitelist")}
+        <div class="field"><label for="cfg-uf-whitelist">白名单 UID <span class="hint">（逗号分隔，仅回复这些用户）</span></label><input id="cfg-uf-whitelist" type="text" value={field(cfg.reply?.user_filter, "whitelist")}
           on:input={(e) => setField(ensureObj(cfg.reply, "user_filter"), "whitelist", e.target.value)} /></div>
-        <div class="field"><label>黑名单 UID <span class="hint">（逗号分隔，屏蔽这些用户）</span></label><input type="text" value={field(cfg.reply?.user_filter, "blacklist")}
+        <div class="field"><label for="cfg-uf-blacklist">黑名单 UID <span class="hint">（逗号分隔，屏蔽这些用户）</span></label><input id="cfg-uf-blacklist" type="text" value={field(cfg.reply?.user_filter, "blacklist")}
           on:input={(e) => setField(ensureObj(cfg.reply, "user_filter"), "blacklist", e.target.value)} /></div>
 
       {:else if activeTab === "rate_limit"}
         <h2>频率控制</h2>
-        <div class="field"><label>最小请求间隔（秒）</label><input type="number" step="0.5" value={field(cfg.rate_limit, "min_request_interval")}
+        <div class="field"><label for="cfg-rl-interval">最小请求间隔（秒）</label><input id="cfg-rl-interval" type="number" step="0.5" value={field(cfg.rate_limit, "min_request_interval")}
           on:input={(e) => setField(cfg.rate_limit, "min_request_interval", parseFloat(e.target.value) || 2)} /></div>
-        <div class="field"><label>最大重试次数</label><input type="number" value={numField(cfg.rate_limit, "max_retries")}
+        <div class="field"><label for="cfg-rl-retries">最大重试次数</label><input id="cfg-rl-retries" type="number" value={numField(cfg.rate_limit, "max_retries")}
           on:input={(e) => setField(cfg.rate_limit, "max_retries", Number(e.target.value))} /></div>
-        <div class="field"><label>重试延迟（秒）</label><input type="number" value={numField(cfg.rate_limit, "retry_delay")}
+        <div class="field"><label for="cfg-rl-delay">重试延迟（秒）</label><input id="cfg-rl-delay" type="number" value={numField(cfg.rate_limit, "retry_delay")}
           on:input={(e) => setField(cfg.rate_limit, "retry_delay", Number(e.target.value))} /></div>
 
       {:else if activeTab === "cache"}
-        <h2>缓存配置</h2>
-        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.cache, "enabled")}
-          on:change={(e) => setField(cfg.cache, "enabled", e.target.checked)} /> 启用缓存</label>
-        <div class="field"><label>过期时间（秒）</label><input type="number" value={numField(cfg.cache, "expire_time")}
-          on:input={(e) => setField(cfg.cache, "expire_time", Number(e.target.value))} /></div>
-        <div class="field"><label>视频缓存过期（秒）</label><input type="number" value={numField(cfg.video_cache, "expire_time")}
+        <h2>视频缓存</h2>
+        <div class="field"><label for="cfg-vc-expire">视频缓存过期（秒）</label><input id="cfg-vc-expire" type="number" value={numField(cfg.video_cache, "expire_time")}
           on:input={(e) => setField(cfg.video_cache, "expire_time", Number(e.target.value))} /></div>
-        <div class="field"><label>视频缓存文件</label><input type="text" value={field(cfg.video_cache, "cache_file")}
+        <div class="field"><label for="cfg-vc-file">视频缓存文件</label><input id="cfg-vc-file" type="text" value={field(cfg.video_cache, "cache_file")}
           on:input={(e) => setField(cfg.video_cache, "cache_file", e.target.value)} /></div>
 
       {:else if activeTab === "logging"}
         <h2>日志设置</h2>
-        <div class="field"><label>日志级别</label>
-          <select value={field(cfg.logging, "level")}
+        <div class="field"><label for="cfg-log-level">日志级别</label>
+          <select id="cfg-log-level" value={field(cfg.logging, "level")}
             on:change={(e) => setField(cfg.logging, "level", e.target.value)}>
-            <option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option>
+            <option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option>
           </select></div>
-        <div class="field"><label>日志文件</label><input type="text" value={field(cfg.logging, "file")}
+        <div class="field"><label for="cfg-log-file">日志文件</label><input id="cfg-log-file" type="text" value={field(cfg.logging, "file")}
           on:input={(e) => setField(cfg.logging, "file", e.target.value)} /></div>
         <label class="checkbox"><input type="checkbox" checked={boolField(cfg.logging, "console")}
           on:change={(e) => setField(cfg.logging, "console", e.target.checked)} /> 输出到控制台</label>
 
       {:else if activeTab === "ai"}
         <h2>AI提供商</h2>
-        <div class="field"><label>选择提供商</label>
-          <select value={cfg.ai?.provider || "deepseek"}
+        <div class="field"><label for="cfg-ai-provider">选择提供商</label>
+          <select id="cfg-ai-provider" value={cfg.ai?.provider || "deepseek"}
             on:change={(e) => { if (cfg.ai) cfg.ai.provider = e.target.value; }} >
             <option value="deepseek">DeepSeek</option>
             <option value="ollama">Ollama（本地）</option>

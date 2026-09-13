@@ -1,0 +1,157 @@
+# ════════════════════════════════════════════════════════════════
+#  BiliCommentBot-RS 配置示例
+# ════════════════════════════════════════════════════════════════
+#
+#  说明
+#  ────
+#  这个文件只是【示例/参考】，程序不会读取它。
+#  真正的配置由程序自动生成，位置在用户数据目录：
+#
+#      %APPDATA%\BiliCommentBot-RS\config.toml
+#
+#  （开发模式运行 `npm run tauri dev` 时同样是上面这个位置；
+#    若在旧版本中数据曾落在程序目录下，首次启动会自动迁移过去。）
+#
+#  ⚠️ 切勿把带有真实 Cookie / API Key 的 config.toml 提交到仓库，
+#     真实文件名已在 .gitignore 中屏蔽。
+#
+#  所有字段都可以省略，省略即使用下面的默认值。
+# ════════════════════════════════════════════════════════════════
+
+[bilibili]
+# B站 Cookie。留空则使用「扫码登录」，扫码成功后程序会自动写入这里。
+cookie = ""
+# Cookie 自动刷新所需的 refresh_token（扫码登录时自动写入）。
+refresh_token = ""
+# 你的 B站 UID。登录成功后自动填充；用于抓取视频列表与跳过自己的评论。
+uid = ""
+# 每轮检查的间隔（秒）。
+check_interval = 60
+# 是否自动刷新 Cookie。
+auto_refresh_cookie = true
+# Cookie 状态检查的最小间隔（分钟）。避免每轮都去敲 passport 接口。
+cookie_refresh_interval = 30
+# 每个视频最多抓取多少页评论（每页 20 条）。
+max_comment_pages = 10
+# 视频列表最多抓取多少页。
+max_video_pages = 10
+
+[rate_limit]
+# 两次 B站 请求之间的最小间隔（秒），指数退避的基数。
+min_request_interval = 2.0
+# 单个请求失败后的最大重试次数（0=不重试）。
+max_retries = 3
+# 重试的基础延迟（秒），实际延迟 = retry_delay * 2^attempt + 抖动。
+retry_delay = 5
+
+[deepseek]
+# DeepSeek API Key（以 sk- 开头）。留空则不会调用云端 AI。
+api_key = ""
+# API 地址。使用第三方 OpenAI 兼容端点时通常需要带 /v1。
+base_url = "https://api.deepseek.com"
+# 模型名。
+model = "deepseek-v4-flash"
+# 单次回复的最大 token 数。
+max_tokens = 200
+# 采样温度。
+temperature = 0.7
+# 系统提示词，决定机器人的人设与语气。
+system_prompt = "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。"
+
+[ollama]
+# 本地 Ollama 服务地址。
+base_url = "http://127.0.0.1:11434"
+# 本地模型名。
+model = "qwen2.5:7b"
+# 单次生成超时（秒）。本地模型较慢，可适当调大。
+timeout_secs = 60
+# 系统提示词。留空则沿用 [deepseek].system_prompt，避免「换了本地模型人设就失效」。
+system_prompt = ""
+# 单次生成的最大 token 数。
+max_tokens = 200
+# 采样温度。
+temperature = 0.7
+
+[ai]
+# 使用哪个 AI 引擎："deepseek"（云端）或 "ollama"（本地）。
+provider = "deepseek"
+
+[reply]
+# 自动回复总开关。关闭后机器人只抓取不回复。
+enabled = true
+# 回复前缀，会拼在 AI 生成内容之前，例如 "🤖 "。
+prefix = ""
+# 每轮最多回复多少条评论（全局上限，跨所有视频累计）。
+max_process = 10
+# 两条回复之间的间隔（秒）。
+reply_delay = 2
+# 回复成功后是否给该评论点赞。
+like_enabled = false
+# 附带多少条上下文评论给 AI 参考（0=不附带）。
+context_comments_count = 0
+# 只处理指定视频，填 BVID（如 BV1xx411c7mD）；留空表示处理全部视频。
+only_bvid = ""
+# 是否点赞评论者的最新视频。
+like_user_video_enabled = false
+# 上面这一项是否只对「关注了你」的用户生效。
+like_user_video_only_followers = false
+# 是否递归回复楼中楼（子评论）。
+chained_reply_enabled = true
+# 楼中楼递归的最大层级。
+max_reply_depth = 3
+# 预览模式：走完整流程生成回复并写日志，但不实际发表、不记录历史。
+dry_run = false
+
+[reply.keyword_filter]
+# 关键词过滤总开关。
+enabled = false
+# 白名单：评论必须命中才回复（逗号分隔）。留空表示不限制。
+whitelist = ""
+# 黑名单：评论命中任一关键词即跳过（逗号分隔）。
+blacklist = ""
+# 白名单匹配方式："any"（任一命中）或 "all"（全部命中）。
+mode = "any"
+# 是否区分大小写。
+match_case = false
+
+[reply.length_filter]
+# 评论长度过滤总开关。
+enabled = false
+# 最短长度（按字符数，0=不限制）。
+min_length = 0
+# 最长长度（0=不限制）。
+max_length = 500
+
+[reply.user_filter]
+# 用户 UID 过滤总开关。
+enabled = false
+# 白名单 UID（逗号分隔）：只回复这些用户。留空表示不限制。
+whitelist = ""
+# 黑名单 UID（逗号分隔）：屏蔽这些用户。
+blacklist = ""
+
+[logging]
+# 日志级别：ERROR / WARN / INFO / DEBUG / TRACE。WARNING 写法也兼容。
+level = "INFO"
+# 日志文件路径。相对路径相对于用户数据目录。
+# 超过 5MB 会自动轮转为 bot.log.1。
+# 正式版没有控制台窗口，日志文件是唯一的排查手段。
+file = "logs/bot.log"
+# 是否同时输出到标准输出。
+console = true
+
+[auth]
+# 启动时的访问密码保护。
+enabled = false
+# 密码哈希（bcrypt）。请通过「设置」页面修改，不要手改这里。
+password = ""
+
+[app]
+# 开机自启（写入当前用户注册表 Run 项，无需管理员权限）。
+autostart = false
+# 关闭主窗口时的行为："ask"（每次询问）/ "tray"（最小化到托盘）/ "exit"（直接退出）。
+close_action = "ask"
+# 启动时若配置完整（已登录 + 已配置 AI），是否自动开始运行机器人。
+auto_start_bot = true
+# 是否已完成首次配置向导。
+setup_complete = false

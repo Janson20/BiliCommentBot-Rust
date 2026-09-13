@@ -1,9 +1,9 @@
 <script>
-  import { onDestroy, createEventDispatcher } from "svelte";
+  import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { open } from "@tauri-apps/api/dialog";
   import {
     migrateFromOld, generateQrcode, pollQrLogin, verifyCookie,
-    setCookieManually, refreshCookie, getConfig, saveConfig,
+    setCookieManually, getConfig, saveConfig,
     checkOllama, listOllamaModels, setPassword
   } from "../lib/api.js";
   import { showToast, loginStatus, config as cfgStore } from "../lib/stores.js";
@@ -70,6 +70,7 @@
   let polling = false;
   let pollMsg = "";
   let pollTimer = null;
+  let qrLoading = false;        // 正在请求二维码，避免重复点击产生多个轮询
   let manualCookie = "";
   let manualRefreshToken = "";
   let loginDone = false;
@@ -89,6 +90,12 @@
   }
 
   async function startQrLogin() {
+    if (qrLoading) return;
+    qrLoading = true;
+    stopPolling();        // 重新生成前先停掉旧计时器，避免重复轮询
+    qrcodeKey = "";
+    qrBase64 = "";
+    pollMsg = "";
     try {
       const r = await generateQrcode();
       qrBase64 = r.qrcode_base64;
@@ -97,6 +104,7 @@
     } catch (e) {
       showToast("error", "获取二维码失败: " + e);
     }
+    qrLoading = false;
   }
 
   function startPolling() {
@@ -108,12 +116,15 @@
   function stopPolling() {
     polling = false;
     if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
   }
 
   async function poll() {
     if (!polling || !qrcodeKey) return;
+    const key = qrcodeKey;   // 二维码被重新生成后，丢弃旧请求的响应，避免重复计时器
     try {
-      const r = await pollQrLogin(qrcodeKey);
+      const r = await pollQrLogin(key);
+      if (key !== qrcodeKey || !polling) return;
       if (r.code === 0) {
         stopPolling();
         // 获取用户名
@@ -128,15 +139,23 @@
         return;
       }
       if (r.code === 86038) {
-        pollMsg = "二维码已过期，请点击重新生成";
-        stopPolling(); return;
+        // 过期：清掉二维码，让「生成二维码」按钮重现，不留死胡同
+        stopPolling();
+        qrcodeKey = "";
+        qrBase64 = "";
+        pollMsg = "二维码已过期，请点击「生成二维码」重新登录";
+        return;
       }
       if (r.code === 86090 || r.code === 86101) {
         pollMsg = "已扫描，请在手机上确认登录...";
       }
     } catch (_) {
-      pollMsg = "轮询出错，请重试";
-      stopPolling(); return;
+      if (key !== qrcodeKey || !polling) return; // 已重新生成，忽略旧请求的报错
+      stopPolling();
+      qrcodeKey = "";
+      qrBase64 = "";
+      pollMsg = "轮询出错，请点击「生成二维码」重试";
+      return;
     }
     pollTimer = setTimeout(poll, 2000);
   }
@@ -145,16 +164,17 @@
     if (!manualCookie) { showToast("error", "请输入 Cookie"); return; }
     loading = true;
     try {
-      await setCookieManually(manualCookie, manualRefreshToken || null);
-      const verify = await verifyCookie();
-      if (verify.valid) {
-        userUname = verify.uname || "";
-        userUid = verify.uid || "";
+      // 后端已先校验再落盘，返回值与 verify_cookie 同构，无需二次校验
+      const r = await setCookieManually(manualCookie, manualRefreshToken || null);
+      if (r?.valid) {
+        userUname = r.uname || "";
+        userUid = r.uid || "";
         loginStatus.set({ loggedIn: true, uname: userUname, uid: userUid });
         loginDone = true;
-        showToast("success", "Cookie 已保存并验证通过");
+        showToast("success", r.message || "Cookie 已保存并验证通过");
       } else {
-        showToast("error", "Cookie 无效或已过期");
+        const why = r?.message ? `：${r.message}` : "";
+        showToast("error", `Cookie 验证未通过${why}，原有登录信息未被修改`);
       }
     } catch (e) {
       showToast("error", "保存失败: " + e);
@@ -243,19 +263,27 @@
   // ════════════════════════════════════════════════
   let pwdInput = "";
   let pwdConfirm = "";
+  let pwdSaving = false;
+  let pwdSavedValue = null;   // 已成功写入后端的密码，用于避免重复保存
 
   async function handleSetPwd() {
+    if (pwdSaving) return false;
     if (pwdInput !== pwdConfirm) {
       showToast("error", "两次密码不一致");
       return false;
     }
+    if (pwdSavedValue === pwdInput) return true; // 同一密码已保存过，跳过重复请求
+    pwdSaving = true;
     try {
       await setPassword(pwdInput);
+      pwdSavedValue = pwdInput;
       showToast("success", pwdInput ? "密码已设置" : "密码已清除");
       return true;
     } catch (e) {
       showToast("error", "设置失败: " + e);
       return false;
+    } finally {
+      pwdSaving = false;
     }
   }
 
@@ -275,10 +303,15 @@
         if (aiProvider === "ollama" && !ollamaAvailable) {
           showToast("error", "请先检测 Ollama 服务是否可用"); return;
         }
-        await saveAiConfig();
+        // 保存失败就停在当前步，否则完成页会谎报「已配置」
+        if (!(await saveAiConfig())) return;
       }
       if (step === 3) {
-        await saveReplyConfig();
+        if (!(await saveReplyConfig())) return;
+      }
+      if (step === 4 && pwdInput) {
+        // 填了密码就必须真正落盘；保存失败不进完成页
+        if (!(await handleSetPwd())) return;
       }
     }
     if (mode === "migrate" && step === 1) {
@@ -297,16 +330,30 @@
     step += 1;
   }
 
-  function doneWizard() {
+  // 完成向导：落盘「已完成」标记，避免下次启动再次弹出向导
+  async function doneWizard() {
+    try {
+      const cfg = await getConfig();
+      cfg.app = cfg.app || {};
+      cfg.app.setup_complete = true;
+      await saveConfig(cfg);
+      cfgStore.set(cfg);
+    } catch (e) {
+      showToast("error", "保存向导状态失败: " + e);
+    }
     dispatch("done");
   }
 
-  // ── 进度标签 ──
+  // ── 进度标签（与 step 一一对应：step 从 1 开始）──
   const freshStepLabels = ["登录B站", "AI引擎", "回复设置", "安全设置", "完成"];
-  const migrateStepLabels = ["选择文件夹", "迁移", "完成"];
+  const migrateStepLabels = ["选择文件夹", "完成"];
 
   $: stepLabels = mode === "migrate" ? migrateStepLabels : freshStepLabels;
 
+  // 进入向导时先探测一次已有 Cookie：如果 Cookie 文件里已经有可用登录，
+  // 就不必强迫用户再扫一次码（可能在 cookie 文件里而不在 config.toml 里）。
+  // 只挂在挂载时执行，不会打断用户正在输入的内容。
+  onMount(checkExistingLogin);
   onDestroy(() => stopPolling());
 </script>
 
@@ -319,11 +366,11 @@
   {#if mode}
     <div class="progress-bar">
       {#each stepLabels as label, i}
-        <div class="progress-step" class:done={i < step} class:active={i === step}>
-          <div class="step-dot">{i < step ? "✓" : i + 1}</div>
+        <div class="progress-step" class:done={i + 1 < step} class:active={i + 1 === step}>
+          <div class="step-dot">{i + 1 < step ? "✓" : i + 1}</div>
           <div class="step-label">{label}</div>
           {#if i < stepLabels.length - 1}
-            <div class="step-line" class:filled={i < step}></div>
+            <div class="step-line" class:filled={i + 1 < step}></div>
           {/if}
         </div>
       {/each}
@@ -414,13 +461,22 @@
             {#if qrBase64}
               <div class="qr-wrap">
                 <img src={qrBase64} alt="QR Code" />
-                {#if pollMsg}
-                  <div class="poll-text">{pollMsg}</div>
-                {/if}
               </div>
-            {:else}
-              <button class="btn-primary" on:click={startQrLogin}>📱 生成二维码</button>
             {/if}
+            {#if pollMsg}
+              <div class="poll-text">{pollMsg}</div>
+            {/if}
+            <div class="qr-actions">
+              {#if qrBase64}
+                <button class="btn-outline" on:click={startQrLogin} disabled={qrLoading}>
+                  {qrLoading ? "⏳ 生成中..." : "🔄 重新生成二维码"}
+                </button>
+              {:else}
+                <button class="btn-primary" on:click={startQrLogin} disabled={qrLoading}>
+                  {qrLoading ? "⏳ 生成中..." : "📱 生成二维码"}
+                </button>
+              {/if}
+            </div>
             <p class="hint">打开 B 站 APP → 我的 → 扫一扫</p>
           </div>
         {:else}
@@ -464,25 +520,25 @@
       {#if aiProvider === "deepseek"}
         <div class="ai-config">
           <div class="field">
-            <label>API Key <span class="required">*</span></label>
-            <input type="password" bind:value={deepseekApiKey} placeholder="sk-xxxxxxxxxxxxxxxx" />
+            <label for="wizard-ds-key">API Key <span class="required">*</span></label>
+            <input id="wizard-ds-key" type="password" bind:value={deepseekApiKey} placeholder="sk-xxxxxxxxxxxxxxxx" />
             <span class="field-hint">在 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 获取</span>
           </div>
           <div class="field">
-            <label>模型</label>
-            <input type="text" bind:value={deepseekModel} placeholder="deepseek-v4-flash" />
+            <label for="wizard-ds-model">模型</label>
+            <input id="wizard-ds-model" type="text" bind:value={deepseekModel} placeholder="deepseek-v4-flash" />
           </div>
         </div>
       {:else}
         <div class="ai-config">
           <p class="hint">需要先安装 <a href="https://ollama.com" target="_blank">Ollama</a> 并拉取模型</p>
           <div class="field">
-            <label>服务地址</label>
-            <input type="text" bind:value={ollamaBaseUrl} placeholder="http://127.0.0.1:11434" />
+            <label for="wizard-ollama-url">服务地址</label>
+            <input id="wizard-ollama-url" type="text" bind:value={ollamaBaseUrl} placeholder="http://127.0.0.1:11434" />
           </div>
           <div class="field">
-            <label>模型名</label>
-            <input type="text" bind:value={ollamaModel} placeholder="qwen2.5:7b" />
+            <label for="wizard-ollama-model">模型名</label>
+            <input id="wizard-ollama-model" type="text" bind:value={ollamaModel} placeholder="qwen2.5:7b" />
           </div>
           <div class="ollama-detect">
             <button class="btn-outline" on:click={detectOllama} disabled={ollamaChecking}>
@@ -493,7 +549,14 @@
               {#if ollamaModels.length > 0}
                 <div class="model-tags">
                   {#each ollamaModels as m}
-                    <span class="model-tag" on:click={() => (ollamaModel = m)} class:selected={ollamaModel === m}>{m}</span>
+                    <span
+                      class="model-tag"
+                      class:selected={ollamaModel === m}
+                      role="button"
+                      tabindex="0"
+                      on:click={() => (ollamaModel = m)}
+                      on:keydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ollamaModel = m; } }}
+                    >{m}</span>
                   {/each}
                 </div>
               {/if}
@@ -523,12 +586,12 @@
           <input type="checkbox" bind:checked={replyEnabled} /> 启用自动回复
         </label>
         <div class="field">
-          <label>回复前缀</label>
-          <input type="text" bind:value={replyPrefix} placeholder="可选，AI 生成的回复将添加此前缀" />
+          <label for="wizard-reply-prefix">回复前缀</label>
+          <input id="wizard-reply-prefix" type="text" bind:value={replyPrefix} placeholder="可选，AI 生成的回复将添加此前缀" />
         </div>
         <div class="field">
-          <label>每次最多处理评论数</label>
-          <input type="number" bind:value={replyMaxProcess} min="1" max="50" />
+          <label for="wizard-reply-max">每次最多处理评论数</label>
+          <input id="wizard-reply-max" type="number" bind:value={replyMaxProcess} min="1" max="50" />
         </div>
         <label class="checkbox-row">
           <input type="checkbox" bind:checked={replyChainedEnabled} /> 启用楼中楼链式回复
@@ -555,19 +618,22 @@
 
       <div class="pwd-form">
         <div class="field">
-          <label>登录密码</label>
-          <input type="password" bind:value={pwdInput} placeholder="留空跳过" />
+          <label for="wizard-pwd">登录密码</label>
+          <input id="wizard-pwd" type="password" bind:value={pwdInput} placeholder="留空跳过" disabled={pwdSaving} />
         </div>
         <div class="field">
-          <label>确认密码</label>
-          <input type="password" bind:value={pwdConfirm} placeholder="再次输入" />
+          <label for="wizard-pwd-confirm">确认密码</label>
+          <input id="wizard-pwd-confirm" type="password" bind:value={pwdConfirm} placeholder="再次输入" disabled={pwdSaving} />
         </div>
+        <p class="field-hint">填写后点击「下一步」即会保存密码；点「跳过」则不设置。</p>
       </div>
 
       <div class="step-actions">
-        <button class="btn-outline" on:click={goPrev}>← 上一步</button>
-        <button class="btn-subtle" on:click={skipStep}>跳过 →</button>
-        <button class="btn-primary" on:click={goNext}>下一步 →</button>
+        <button class="btn-outline" on:click={goPrev} disabled={pwdSaving}>← 上一步</button>
+        <button class="btn-subtle" on:click={skipStep} disabled={pwdSaving}>跳过 →</button>
+        <button class="btn-primary" on:click={goNext} disabled={pwdSaving}>
+          {pwdSaving ? "⏳ 保存中..." : "下一步 →"}
+        </button>
       </div>
     </div>
 
@@ -586,7 +652,7 @@
         {#if mode === "fresh"}
           <div class="summary-row"><span>AI 引擎</span><span>{aiProvider === "deepseek" ? "DeepSeek（云端）" : "Ollama（本地）"}</span></div>
           <div class="summary-row"><span>自动回复</span><span>{replyEnabled ? "✅ 启用" : "⛔ 关闭"}</span></div>
-          <div class="summary-row"><span>密码保护</span><span>{pwdInput ? "🔒 已设置" : "— 未设置"}</span></div>
+          <div class="summary-row"><span>密码保护</span><span>{pwdSavedValue ? "🔒 已设置" : "— 未设置"}</span></div>
         {/if}
         {#if mode === "migrate" && migrateResult}
           <div class="summary-row"><span>迁移项目数</span><span>{migrateResult.migrated_count} 个文件</span></div>
@@ -727,6 +793,7 @@
   .qr-wrap { display: inline-block; }
   .qr-wrap img { width: 180px; height: 180px; border-radius: 10px; background: #fff; padding: 6px; }
   .poll-text { margin-top: 8px; color: #00b4d8; font-size: 0.82rem; }
+  .qr-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
   .manual-form { display: flex; flex-direction: column; gap: 12px; }
   .manual-form label { font-size: 0.82rem; color: #8aa0b8; display: flex; flex-direction: column; gap: 4px; }
 
@@ -762,12 +829,12 @@
   .field .required { color: #e74c3c; }
   .field-hint { display: block; font-size: 0.74rem; color: #5a7a9a; margin-top: 3px; }
   .field-hint a { color: #00b4d8; }
-  input[type="text"], input[type="password"], input[type="number"], textarea, select {
+  input[type="text"], input[type="password"], input[type="number"], textarea {
     width: 100%; padding: 9px 12px; border-radius: 8px;
     border: 1px solid #1e3a5f; background: #0d1b2a; color: #e0e8f0;
     font-size: 0.88rem; outline: none; font-family: "Microsoft YaHei", "PingFang SC", "Consolas", monospace;
   }
-  input:focus, textarea:focus, select:focus { border-color: #00b4d8; }
+  input:focus, textarea:focus { border-color: #00b4d8; }
   textarea { resize: vertical; }
   .checkbox-row {
     display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
