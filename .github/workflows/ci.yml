@@ -58,7 +58,7 @@ jobs:
         run: |
           # 真实凭证曾因 config.toml 被跟踪而泄露到公开仓库，
           # 这里把「数据文件混进版本控制」变成一次明确的构建失败。
-          $forbidden = @(
+          $forbiddenNames = @(
             'config.toml',
             'bilibili_cookie.json',
             'history.db',
@@ -66,15 +66,20 @@ jobs:
             'history.json.bak',
             'video_cache.json'
           )
-          $tracked = git ls-files
+          # 例外：cargo 配置是源码（不是运行时数据），名字撞上了 config.toml
+          $allowed = @('src-tauri/.cargo/config.toml')
+
           $bad = @()
-          foreach ($f in $tracked) {
+          foreach ($f in (git ls-files)) {
+            $norm = $f -replace '\\', '/'
+            if ($allowed -contains $norm) { continue }
+
             $name = Split-Path $f -Leaf
-            # config.example.toml 是允许提交的模板
-            if ($forbidden -contains $name) { $bad += $f }
-            if ($f -match '\.log$') { $bad += $f }
-            if ($f -match '^logs/') { $bad += $f }
+            if ($forbiddenNames -contains $name) { $bad += $f; continue }
+            if ($name -like '*.log') { $bad += $f; continue }
+            if ($norm -like 'logs/*' -or $norm -like '*/logs/*') { $bad += $f; continue }
           }
+
           if ($bad.Count -gt 0) {
             Write-Error "以下运行时数据文件不应被提交（可能包含凭证）：`n$($bad -join "`n")"
             exit 1
