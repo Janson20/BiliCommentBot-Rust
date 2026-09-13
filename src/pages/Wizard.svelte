@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, createEventDispatcher } from "svelte";
   import { open } from "@tauri-apps/api/dialog";
+  import { open as openExternal } from "@tauri-apps/api/shell";
   import {
     migrateFromOld, generateQrcode, pollQrLogin, verifyCookie,
     setCookieManually, getConfig, saveConfig,
@@ -522,7 +523,7 @@
           <div class="field">
             <label for="wizard-ds-key">API Key <span class="required">*</span></label>
             <input id="wizard-ds-key" type="password" bind:value={deepseekApiKey} placeholder="sk-xxxxxxxxxxxxxxxx" />
-            <span class="field-hint">在 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 获取</span>
+            <span class="field-hint">在 <a href="https://platform.deepseek.com/api_keys" on:click|preventDefault={() => openExternal("https://platform.deepseek.com/api_keys")}>platform.deepseek.com</a> 获取</span>
           </div>
           <div class="field">
             <label for="wizard-ds-model">模型</label>
@@ -531,7 +532,7 @@
         </div>
       {:else}
         <div class="ai-config">
-          <p class="hint">需要先安装 <a href="https://ollama.com" target="_blank">Ollama</a> 并拉取模型</p>
+          <p class="hint">需要先安装 <a href="https://ollama.com" on:click|preventDefault={() => openExternal("https://ollama.com")}>Ollama</a> 并拉取模型</p>
           <div class="field">
             <label for="wizard-ollama-url">服务地址</label>
             <input id="wizard-ollama-url" type="text" bind:value={ollamaBaseUrl} placeholder="http://127.0.0.1:11434" />

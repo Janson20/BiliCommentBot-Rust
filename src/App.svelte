@@ -35,6 +35,9 @@
   let pwdInput = "";
   let unlocking = false;
 
+  // 后端推送的提醒横幅（登录失效 / 连续失败等）
+  let alertInfo = null;
+
   /// 兜底：手动填写的 Cookie 只落到 cookie 文件，配置里可能没有 bilibili.uid。
   /// 带超时，避免网络异常时长时间停在加载页。
   async function hasLiveLogin() {
@@ -76,6 +79,16 @@
           break;
         case "video_list":
           videos.set(data.videos || []);
+          break;
+        case "alert":
+          // 需要用户处理的问题（登录失效 / 连续失败）——用横幅而不是一闪而过的 toast，
+          // 否则 Cookie 过期后机器人会静默失败一整晚都没人发现
+          alertInfo = {
+            level: data.level || "warning",
+            title: data.title || "需要注意",
+            message: data.message || "",
+          };
+          showToast(data.level === "error" ? "error" : "info", data.title || "需要注意");
           break;
       }
     }).then((fn) => { unlistenFn = fn; });
@@ -192,6 +205,16 @@
   <div class="app-layout">
     <Sidebar />
     <div class="main-content">
+      {#if alertInfo}
+        <div class="alert-banner" class:error={alertInfo.level === "error"} role="alert">
+          <span class="alert-icon">{alertInfo.level === "error" ? "⛔" : "⚠️"}</span>
+          <div class="alert-body">
+            <strong>{alertInfo.title}</strong>
+            {#if alertInfo.message}<span>{alertInfo.message}</span>{/if}
+          </div>
+          <button class="alert-close" on:click={() => (alertInfo = null)} aria-label="关闭提醒">×</button>
+        </div>
+      {/if}
       <svelte:component this={
         route === "/login"    ? Login :
         route === "/config"   ? Config :
@@ -224,6 +247,25 @@
     flex: 1; overflow-y: auto; padding: 24px 28px; background: #1a1a2e;
   }
   .boot-loading { font-size: 0.9rem; color: #8aa0b8; letter-spacing: 1px; }
+
+  /* 需要用户处理的提醒（登录失效 / 连续失败），常驻到用户手动关闭 */
+  .alert-banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 16px;
+    border: 1px solid #8a6d1f; border-radius: 10px;
+    background: #2a2413; color: #f0d68a;
+    font-size: 0.85rem; line-height: 1.5;
+  }
+  .alert-banner.error { border-color: #7a2b2b; background: #2b1616; color: #f0a0a0; }
+  .alert-icon { flex-shrink: 0; }
+  .alert-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .alert-body strong { font-size: 0.88rem; }
+  .alert-body span { opacity: 0.9; }
+  .alert-close {
+    flex-shrink: 0; background: none; border: none; cursor: pointer;
+    color: inherit; opacity: 0.7; font-size: 1.1rem; line-height: 1; padding: 0 2px;
+  }
+  .alert-close:hover { opacity: 1; }
   :global(::-webkit-scrollbar) { width: 6px; }
   :global(::-webkit-scrollbar-track) { background: #0f1a2e; }
   :global(::-webkit-scrollbar-thumb) { background: #334; border-radius: 3px; }

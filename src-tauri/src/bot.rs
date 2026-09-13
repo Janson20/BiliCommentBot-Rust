@@ -51,7 +51,23 @@ pub enum BotEvent {
     VideoList { count: usize, videos: Vec<VideoInfo> },
     #[serde(rename = "status")]
     Status { running: bool },
+    /// 需要用户处理的问题（Cookie 失效、连续失败等），前端显示醒目横幅。
+    ///
+    /// 没有它的话，Cookie 过期后机器人会**静默**失败一整晚，只有翻日志才发现。
+    #[serde(rename = "alert")]
+    Alert {
+        /// "error" | "warning"
+        level: String,
+        title: String,
+        message: String,
+    },
 }
+
+/// B站 评论的长度上限（按字符计），超出会被服务端拒绝，因此这里主动截断
+pub const MAX_REPLY_CHARS: usize = 1000;
+
+/// 连续失败达到该次数时提醒用户
+const FAILURE_ALERT_THRESHOLD: u32 = 5;
 
 /// 机器人共享状态（线程安全，Arc 包裹供 Tauri State + 后台任务共享）
 pub struct BotState {
@@ -101,6 +117,20 @@ impl BotState {
             consecutive_failures,
         };
         let _ = self.event_tx.send(BotEvent::Stats(stats));
+    }
+
+    /// 推送一条需要用户注意的提醒（同时写日志），前端会显示横幅
+    pub fn send_alert(&self, level: &str, title: &str, message: &str) {
+        if level == "error" {
+            log::error!("[提醒] {} — {}", title, message);
+        } else {
+            log::warn!("[提醒] {} — {}", title, message);
+        }
+        let _ = self.event_tx.send(BotEvent::Alert {
+            level: level.to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+        });
     }
 }
 
@@ -412,10 +442,24 @@ async fn bot_main_loop(state: Arc<BotState>) {
             }
         }
 
+        // 连续失败达到阈值时提醒用户（每轮至多一次，避免刷屏）
+        let failures = state.rate_limiter.failure_count();
+        if failures >= FAILURE_ALERT_THRESHOLD {
+            state.send_alert(
+                "warning",
+                "连续请求失败",
+                &format!(
+                    "已连续失败 {} 次，可能触发了 B站 的频率限制或被风控。\
+                     建议调大「最小请求间隔」，或稍后再试。",
+                    failures
+                ),
+            );
+        }
+
         // 等待下次检查
         state.send_stats(
             state.history.lock().await.total_replied(),
-            state.rate_limiter.failure_count(),
+            failures,
         ).await;
         state.send_log("INFO", &format!(
             "==== 第 {} 轮完成（本轮回复 {} 条） 等待 {} 秒 ====",
@@ -491,6 +535,11 @@ async fn process_comments(
             Some(c) => c,
             None => {
                 state.send_log("ERROR", "CSRF Token (bili_jct) 缺失，跳过评论处理。请确认 Cookie 包含 bili_jct 字段。");
+                state.send_alert(
+                    "error",
+                    "登录凭证缺少 bili_jct",
+                    "无法发表回复。请在「登录」页面重新扫码，或手动填写完整的 Cookie。",
+                );
                 return;
             }
         };
@@ -500,6 +549,14 @@ async fn process_comments(
             let verify = cm.verify_cookie().await;
             if !verify.valid {
                 state.send_log("ERROR", &format!("Cookie 无效，跳过评论处理: {}", verify.message));
+                state.send_alert(
+                    "error",
+                    "B站登录已失效",
+                    &format!(
+                        "{}。机器人不会再发表任何回复，请在「登录」页面重新扫码登录。",
+                        verify.message
+                    ),
+                );
                 return;
             }
         }
@@ -646,6 +703,15 @@ async fn process_comments(
         } else {
             format!("{}{}", prefix, reply_text)
         };
+
+        // 超过 B站 长度上限的回复会被服务端直接拒绝，这里主动截断
+        let (full_reply, truncated) = clamp_reply(&full_reply, MAX_REPLY_CHARS);
+        if truncated {
+            state.send_log(
+                "WARN",
+                &format!("AI 回复超过 {} 字符，已截断后发表", MAX_REPLY_CHARS),
+            );
+        }
 
         // 预览模式：仅日志输出生成的回复，不发表、不存历史
         if is_dry_run {
@@ -999,6 +1065,17 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+/// 把回复截断到 B站 允许的最大长度。
+/// 返回 (截断后的文本, 是否发生了截断)。
+fn clamp_reply(text: &str, max_chars: usize) -> (String, bool) {
+    let len = text.chars().count();
+    if len <= max_chars {
+        (text.to_string(), false)
+    } else {
+        (text.chars().take(max_chars).collect(), true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1098,6 +1175,31 @@ mod tests {
     fn test_truncate_str_is_char_safe() {
         assert_eq!(truncate_str("你好世界", 2), "你好");
         assert_eq!(truncate_str("abc", 10), "abc");
+    }
+
+    #[test]
+    fn test_clamp_reply_leaves_short_text_alone() {
+        let (out, truncated) = clamp_reply("很短", MAX_REPLY_CHARS);
+        assert_eq!(out, "很短");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_clamp_reply_truncates_long_text_at_char_boundary() {
+        // 用中文构造超长文本：按字符截断，不能把多字节字符切成半个
+        let long: String = "回".repeat(MAX_REPLY_CHARS + 500);
+        let (out, truncated) = clamp_reply(&long, MAX_REPLY_CHARS);
+        assert!(truncated, "应报告发生了截断");
+        assert_eq!(out.chars().count(), MAX_REPLY_CHARS);
+        // 结果仍是合法 UTF-8 且内容完整
+        assert!(out.chars().all(|c| c == '回'));
+    }
+
+    #[test]
+    fn test_clamp_reply_exact_boundary_is_not_truncated() {
+        let exact: String = "a".repeat(MAX_REPLY_CHARS);
+        let (_, truncated) = clamp_reply(&exact, MAX_REPLY_CHARS);
+        assert!(!truncated, "正好等于上限不应算截断");
     }
 
     fn reply_cfg() -> ReplyConfig {

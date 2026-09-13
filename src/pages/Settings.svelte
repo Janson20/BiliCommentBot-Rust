@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { open as openExternal } from "@tauri-apps/api/shell";
   import {
     setPassword,
     checkOllama,
@@ -441,7 +442,7 @@
   <div class="about">
     <p>BiliCommentBot-RS v0.1.5</p>
     <p class="sub">Rust + Tauri + Svelte 构建 · Windows 桌面版</p>
-    <p class="sub">基于 <a href="https://github.com/Janson20/BiliCommentBot" target="_blank">BiliCommentBot</a> 移植</p>
+    <p class="sub">基于 <a href="https://github.com/Janson20/BiliCommentBot" on:click|preventDefault={() => openExternal("https://github.com/Janson20/BiliCommentBot")}>BiliCommentBot</a> 移植</p>
   </div>
 </div>
 

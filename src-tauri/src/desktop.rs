@@ -26,6 +26,9 @@ pub const MAIN_WINDOW: &str = "main";
 
 /// 托盘菜单项 ID
 const TRAY_MENU_SHOW: &str = "tray-show";
+const TRAY_MENU_START: &str = "tray-start";
+const TRAY_MENU_STOP: &str = "tray-stop";
+const TRAY_MENU_CHECK: &str = "tray-check";
 const TRAY_MENU_QUIT: &str = "tray-quit";
 
 /// 托盘图标悬停提示
@@ -82,6 +85,10 @@ pub fn tray() -> SystemTray {
     let menu = SystemTrayMenu::new()
         .add_item(CustomMenuItem::new(TRAY_MENU_SHOW, "显示主窗口"))
         .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new(TRAY_MENU_START, "启动机器人"))
+        .add_item(CustomMenuItem::new(TRAY_MENU_STOP, "停止机器人"))
+        .add_item(CustomMenuItem::new(TRAY_MENU_CHECK, "立即检查"))
+        .add_native_item(SystemTrayMenuItem::Separator)
         .add_item(CustomMenuItem::new(TRAY_MENU_QUIT, "退出程序"));
 
     SystemTray::new().with_tooltip(TRAY_TOOLTIP).with_menu(menu)
@@ -92,6 +99,9 @@ pub fn on_tray_event<R: Runtime>(app: &AppHandle<R>, event: SystemTrayEvent) {
     match event {
         SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
             TRAY_MENU_SHOW => show_main_window(app),
+            TRAY_MENU_START => start_bot_from_tray(app),
+            TRAY_MENU_STOP => stop_bot_from_tray(app),
+            TRAY_MENU_CHECK => trigger_check_from_tray(app),
             TRAY_MENU_QUIT => {
                 log::info!("托盘菜单：退出程序");
                 quit_app(app);
@@ -104,6 +114,51 @@ pub fn on_tray_event<R: Runtime>(app: &AppHandle<R>, event: SystemTrayEvent) {
         }
         _ => {}
     }
+}
+
+/// 托盘：启动机器人
+fn start_bot_from_tray<R: Runtime>(app: &AppHandle<R>) {
+    let Some(bot) = app.try_state::<Arc<BotState>>() else {
+        log::warn!("托盘启动失败：未找到机器人状态");
+        return;
+    };
+    match crate::bot::try_start(bot.inner()) {
+        Ok(()) => log::info!("托盘菜单：已启动机器人"),
+        Err(e) => {
+            // 例如「已在运行中」或历史库不可用
+            log::warn!("托盘启动机器人失败: {}", e);
+            bot.send_alert("warning", "无法启动机器人", &e);
+        }
+    }
+}
+
+/// 托盘：停止机器人
+fn stop_bot_from_tray<R: Runtime>(app: &AppHandle<R>) {
+    let Some(bot) = app.try_state::<Arc<BotState>>() else {
+        return;
+    };
+    if !bot.running.load(Ordering::Relaxed) {
+        log::debug!("托盘停止：机器人本就未在运行");
+        return;
+    }
+    bot.shutdown.store(true, Ordering::Relaxed);
+    bot.running.store(false, Ordering::Relaxed);
+    let _ = bot.event_tx.send(crate::bot::BotEvent::Status { running: false });
+    bot.send_log("INFO", "已从托盘菜单停止机器人");
+    log::info!("托盘菜单：已停止机器人");
+}
+
+/// 托盘：立即检查
+fn trigger_check_from_tray<R: Runtime>(app: &AppHandle<R>) {
+    let Some(bot) = app.try_state::<Arc<BotState>>() else {
+        return;
+    };
+    if !bot.running.load(Ordering::Relaxed) {
+        bot.send_alert("warning", "机器人未在运行", "请先从托盘菜单选择「启动机器人」。");
+        return;
+    }
+    bot.manual_trigger.store(true, Ordering::Relaxed);
+    bot.send_log("INFO", "已从托盘菜单触发立即检查");
 }
 
 // ════════════════════════════════════════════════════════════════

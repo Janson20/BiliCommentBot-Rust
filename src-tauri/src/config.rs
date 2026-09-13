@@ -400,6 +400,12 @@ pub struct RawConfig {
     /// 桌面程序行为（新增字段，Python 版无此字段，兼容处理）
     #[serde(default)]
     pub app: AppUiConfig,
+    /// 未知字段 / 未知 section 的兜底存放。
+    ///
+    /// 没有它的话，手改 `config.toml` 添加的自定义字段会在界面保存配置时被静默
+    /// 丢弃（Python 版会原样写回）。这里原样保留并写回。
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, toml::Value>,
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -638,5 +644,47 @@ password = ""
 
         let off: RawConfig = toml::from_str("[app]\nauto_start_bot = false\n").unwrap();
         assert!(!off.app.auto_start_bot);
+    }
+
+    /// 手改配置里的未知 section 在「读入 → 写回」过程中必须原样保留
+    #[test]
+    fn test_unknown_keys_survive_roundtrip() {
+        let raw = r#"
+[bilibili]
+uid = "123"
+
+[my_custom_section]
+note = "手写的备注"
+number = 42
+
+[reply]
+prefix = "hi"
+"#;
+        let parsed: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(parsed.bilibili.uid, "123");
+        assert!(parsed.extra.contains_key("my_custom_section"));
+
+        let written = toml::to_string_pretty(&parsed).expect("应能序列化带未知字段的配置");
+        assert!(
+            written.contains("my_custom_section"),
+            "未知 section 应被写回:\n{}",
+            written
+        );
+        assert!(written.contains("手写的备注"), "未知字段的值应保留");
+        assert!(written.contains("number = 42"));
+
+        let reparsed: RawConfig = toml::from_str(&written).unwrap();
+        assert!(reparsed.extra.contains_key("my_custom_section"));
+    }
+
+    /// 未知的顶层标量字段也要保留
+    #[test]
+    fn test_unknown_scalar_key_survives_roundtrip() {
+        let raw = "my_flag = true\n\n[bilibili]\nuid = \"1\"\n";
+        let parsed: RawConfig = toml::from_str(raw).unwrap();
+        let written = toml::to_string_pretty(&parsed).unwrap();
+        assert!(written.contains("my_flag = true"), "写回内容:\n{}", written);
+        // 已知字段不能丢
+        assert_eq!(parsed.bilibili.uid, "1");
     }
 }
