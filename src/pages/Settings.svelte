@@ -440,7 +440,7 @@
 <div class="section">
   <h2>ℹ️ 关于</h2>
   <div class="about">
-    <p>BiliCommentBot-RS v0.1.5</p>
+    <p>BiliCommentBot-RS v1.0.0</p>
     <p class="sub">Rust + Tauri + Svelte 构建 · Windows 桌面版</p>
     <p class="sub">基于 <a href="https://github.com/Janson20/BiliCommentBot" on:click|preventDefault={() => openExternal("https://github.com/Janson20/BiliCommentBot")}>BiliCommentBot</a> 移植</p>
   </div>
