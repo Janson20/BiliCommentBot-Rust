@@ -158,9 +158,15 @@ pub fn try_start(state: &Arc<BotState>) -> Result<(), String> {
     Ok(())
 }
 
-/// 启动机器人后台任务（独立的 tokio task）
+/// 启动机器人后台任务
+///
+/// ⚠️ 必须用 `tauri::async_runtime::spawn` 而不是 `tokio::spawn`：
+/// 这个函数会被**非异步上下文**调用 —— 启动时的自动运行（`tauri::Builder::setup`）
+/// 与托盘菜单回调都跑在主线程上，那里没有活动的 Tokio runtime，
+/// `tokio::spawn` 会直接 panic（"there is no reactor running"）。
+/// Tauri 的 async_runtime 持有自己的 runtime 句柄，因此在任何线程都能安全 spawn。
 pub fn start_bot(state: Arc<BotState>) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         bot_main_loop(state).await;
     });
 }
@@ -1281,5 +1287,83 @@ mod tests {
 
         c.uid = "500".into();
         assert!(check_filters(&cfg, &c).is_some());
+    }
+
+    // ── 启动路径 ──
+
+    /// 构造一个「一 spawn 就立刻退出」的 BotState。
+    ///
+    /// `shutdown` 预先置位，主循环第一次检查就会 break，因此不会发起任何网络请求。
+    fn idle_state(db_name: &str, history_available: bool) -> Arc<BotState> {
+        let dir = std::env::temp_dir().join("bili_bot_start_tests");
+        let _ = std::fs::create_dir_all(&dir);
+        let db = dir.join(db_name);
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_file(dir.join(format!("{}-wal", db_name)));
+        let _ = std::fs::remove_file(dir.join(format!("{}-shm", db_name)));
+
+        let (event_tx, _) = broadcast::channel(16);
+        let (reload_tx, _) = broadcast::channel(4);
+        let client = reqwest::Client::builder().build().expect("构建测试 HTTP 客户端失败");
+
+        Arc::new(BotState {
+            config: RwLock::new(RawConfig::default()),
+            history: Mutex::new(HistoryManager::new(&db)),
+            cookie_manager: Mutex::new(CookieManager::from_client(client)),
+            running: AtomicBool::new(false),
+            start_time: Mutex::new(None),
+            last_check: Mutex::new(None),
+            event_tx,
+            reload_tx,
+            shutdown: AtomicBool::new(true),
+            manual_trigger: AtomicBool::new(false),
+            rate_limiter: RateLimiter::new(2.0, 3, 5),
+            history_available,
+            last_cookie_check: Mutex::new(None),
+        })
+    }
+
+    /// 回归测试：启动机器人**不允许**要求调用方处于 Tokio runtime 中。
+    ///
+    /// 启动时的自动运行（`tauri::Builder::setup`）与托盘菜单回调都在主线程上，
+    /// 那里没有活动的 Tokio runtime。早先内部用的是 `tokio::spawn`，
+    /// 会在 `start_bot` 这一行直接 panic：
+    /// "there is no reactor running, must be called from the context of a Tokio 1.x runtime"。
+    #[test]
+    fn test_start_bot_works_outside_tokio_runtime() {
+        let state = idle_state("start_outside_runtime.db", true);
+        state.running.store(true, Ordering::Relaxed);
+
+        // 若内部改回 tokio::spawn，这一行就会 panic（本测试因此失败）
+        start_bot(state.clone());
+
+        // 等被 spawn 的任务跑完「立即退出」路径
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        assert!(
+            !state.running.load(Ordering::Relaxed),
+            "主循环结束后应复位 running 标记（说明任务确实跑起来了并正常退出）"
+        );
+    }
+
+    /// 历史库不可用时必须拒绝启动 —— 否则去重失效会重复回复
+    #[test]
+    fn test_try_start_refuses_when_history_unavailable() {
+        let state = idle_state("start_no_history.db", false);
+        let err = try_start(&state).expect_err("历史库不可用时应拒绝启动");
+        assert!(err.contains("历史数据库不可用"), "错误信息应说明原因: {}", err);
+        assert!(
+            !state.running.load(Ordering::Relaxed),
+            "被拒绝时不应把状态标成运行中"
+        );
+    }
+
+    /// 重复启动要被拒绝，而不是起两个循环
+    #[test]
+    fn test_try_start_rejects_double_start() {
+        let state = idle_state("start_double.db", true);
+        state.running.store(true, Ordering::Relaxed);
+        let err = try_start(&state).expect_err("已在运行时应拒绝");
+        assert!(err.contains("已在运行中"), "错误信息: {}", err);
     }
 }
