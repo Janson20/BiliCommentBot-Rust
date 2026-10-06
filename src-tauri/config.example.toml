@@ -50,11 +50,20 @@ api_key = ""
 # API 地址。使用第三方 OpenAI 兼容端点时通常需要带 /v1。
 base_url = "https://api.deepseek.com"
 # 模型名。
-model = "deepseek-v4-flash"
+# 2026-09-10 起官方模型名为 deepseek-flash（V4.1 Flash）；
+# 旧名 deepseek-v4-flash 已退役，仅暂时转发到同一模型。
+model = "deepseek-flash"
 # 单次回复的最大 token 数。
-max_tokens = 200
-# 采样温度。
+max_tokens = 800
+# 采样温度。仅在 thinking = false 时生效。
 temperature = 0.7
+# 是否使用「思考模式」。
+#
+# 线上模型自 2026-09-10 起**默认开启**思考模式（effort = high）：先输出一段思维链
+# 再给出正式回复。对评论自动回复并不划算，而且官方明确说明思考模式下 temperature
+# 会被忽略（设了不报错，但无效），思维链还会占用输出预算、拉长响应时间。
+# 因此本项目默认关闭；确实想要更强推理时可以改 true。
+thinking = false
 # 系统提示词，决定机器人的人设与语气。
 system_prompt = "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。"
 

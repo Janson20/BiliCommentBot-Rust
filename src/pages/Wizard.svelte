@@ -188,7 +188,7 @@
   // ════════════════════════════════════════════════
   let aiProvider = "deepseek";
   let deepseekApiKey = "";
-  let deepseekModel = "deepseek-v4-flash";
+  let deepseekModel = "deepseek-flash";
   let ollamaBaseUrl = "http://127.0.0.1:11434";
   let ollamaModel = "qwen2.5:7b";
   let ollamaChecking = false;
@@ -217,7 +217,7 @@
       if (aiProvider === "deepseek") {
         cfg.deepseek = cfg.deepseek || {};
         cfg.deepseek.api_key = deepseekApiKey;
-        cfg.deepseek.model = deepseekModel || "deepseek-v4-flash";
+        cfg.deepseek.model = deepseekModel || "deepseek-flash";
       } else {
         cfg.ollama = cfg.ollama || {};
         cfg.ollama.base_url = ollamaBaseUrl;
@@ -470,7 +470,7 @@
             <div class="qr-actions">
               {#if qrBase64}
                 <button class="btn-outline" on:click={startQrLogin} disabled={qrLoading}>
-                  {qrLoading ? "⏳ 生成中..." : "🔄 重新生成二维码"}
+                  {qrLoading ? "生成中..." : "重新生成二维码"}
                 </button>
               {:else}
                 <button class="btn-primary" on:click={startQrLogin} disabled={qrLoading}>
@@ -527,7 +527,7 @@
           </div>
           <div class="field">
             <label for="wizard-ds-model">模型</label>
-            <input id="wizard-ds-model" type="text" bind:value={deepseekModel} placeholder="deepseek-v4-flash" />
+            <input id="wizard-ds-model" type="text" bind:value={deepseekModel} placeholder="deepseek-flash" />
           </div>
         </div>
       {:else}
@@ -633,7 +633,7 @@
         <button class="btn-outline" on:click={goPrev} disabled={pwdSaving}>← 上一步</button>
         <button class="btn-subtle" on:click={skipStep} disabled={pwdSaving}>跳过 →</button>
         <button class="btn-primary" on:click={goNext} disabled={pwdSaving}>
-          {pwdSaving ? "⏳ 保存中..." : "下一步 →"}
+          {pwdSaving ? "保存中..." : "下一步 →"}
         </button>
       </div>
     </div>

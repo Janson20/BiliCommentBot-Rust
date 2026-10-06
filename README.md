@@ -184,7 +184,9 @@ retry_delay = 5                # 重试基础延迟（秒），实际 = retry_de
 
 [deepseek]
 api_key = "sk-xxx"     # DeepSeek API 密钥
-model = "deepseek-v4-flash"
+model = "deepseek-flash"
+max_tokens = 800       # 单次回复的最大 token 数
+temperature = 0.7      # 思考模式下会被忽略，见下方说明
 
 [ollama]
 base_url = "http://127.0.0.1:11434"
@@ -283,6 +285,20 @@ close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最�
 | 速度 | 取决于网络 | 取决于硬件 |
 | 费用 | API 调用计费 | 免费 |
 | 切换方式 | 配置 `[ai] provider` 字段 | — |
+
+### DeepSeek 模型与思考模式
+
+- **模型名**：默认 `deepseek-flash`。2026-09-10 官方发布 V4.1 Flash 后，上一代的
+  `deepseek-v4-flash` 已退役（旧名仍会被转发到 V4.1 Flash，但建议改用新名）。
+  `base_url` 保持 `https://api.deepseek.com`。
+- **思考模式**：新模型**默认开启**思考模式（effort = `high`），模型会先输出一段思维链
+  再给出正式回复。官方文档明确说明思考模式下 `temperature` **会被静默忽略**
+  （设置它不报错，但也不生效），思维链还会占用输出预算并明显拉长响应时间。
+  对评论自动回复这种场景并不划算，因此本项目：
+  - 新增 `[deepseek] thinking` 开关，**默认 `false`（关闭思考模式）**，
+    请求体里会显式带上 `{"thinking": {"type": "disabled"}}`，不依赖服务端默认值；
+  - 关闭后 `temperature` 才会真正生效，回复更快、输出预算也不会被思维链占用。
+  - 如果你的评论里经常需要「理解上下文/讲道理」式的长回复，可以把它改成 `true` 试试。
 
 ---
 

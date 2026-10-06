@@ -5,6 +5,17 @@
 
 ## Unreleased
 
+### 适配 DeepSeek API 更新
+
+- 默认模型由 `deepseek-v4-flash` 改为 `deepseek-flash`：官方 2026-09-10 上线 V4.1 Flash 后，
+  上一代 V4 Flash 已退役（旧模型名仅暂时转发到 V4.1 Flash）。向导里的默认值与占位文字一并同步。
+- 新增 `[deepseek] thinking` 开关并**默认关闭**。新模型默认开启思考模式，而思考模式下
+  `temperature` 会被官方静默忽略、思维链还会占用输出预算并拉长响应时间；本项目会显式发送
+  `{"thinking": {"type": "disabled"}}`，不依赖服务端默认值。关闭后 `temperature` 才真正生效。
+  配置页「DeepSeek」标签新增对应开关与说明。
+- `[deepseek] max_tokens` 默认值由 200 提到 800，避免正式回复被输出预算截断；
+  `[ollama] max_tokens` 保持 200 不变（本地模型速度较慢，改为独立默认值）。
+
 ### 安全（重要）
 
 - 运行时数据（`config.toml` / `bilibili_cookie.json` / `history.db` / `video_cache.json` / `logs/`）

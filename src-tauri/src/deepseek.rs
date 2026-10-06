@@ -16,12 +16,24 @@ struct ChatMessage {
     content: String,
 }
 
+/// 思考模式开关。
+///
+/// 官方参数（OpenAI 格式）为 `{"thinking": {"type": "enabled" | "disabled"}}`，
+/// 直接作为请求体的顶层字段发送。线上模型默认是 `enabled`，
+/// 所以这里**总是显式发送**，避免依赖服务端的默认值。
+#[derive(Debug, Serialize)]
+struct ThinkingToggle {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     max_tokens: u32,
     temperature: f64,
+    thinking: ThinkingToggle,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +111,23 @@ pub fn build_messages(
     messages
 }
 
+/// 组装请求体。抽成独立函数便于单测直接断言序列化结果。
+fn build_request(api_config: &DeepseekConfig, messages: Vec<ChatMessage>) -> ChatRequest {
+    ChatRequest {
+        model: api_config.model.clone(),
+        messages,
+        max_tokens: api_config.max_tokens,
+        temperature: api_config.temperature,
+        thinking: ThinkingToggle {
+            kind: if api_config.thinking {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        },
+    }
+}
+
 /// 使用 DeepSeek API 生成回复
 pub async fn generate_reply(
     client: &reqwest::Client,
@@ -127,20 +156,20 @@ pub async fn generate_reply(
     .map(|(role, content)| ChatMessage { role, content })
     .collect::<Vec<_>>();
 
-    let request_body = ChatRequest {
-        model: api_config.model.clone(),
-        messages,
-        max_tokens: api_config.max_tokens,
-        temperature: api_config.temperature,
-    };
+    let request_body = build_request(api_config, messages);
 
     log::debug!(
-        "DeepSeek 请求: model={} max_tokens={} temp={} msg_count={}",
+        "DeepSeek 请求: model={} max_tokens={} temp={} thinking={} msg_count={}",
         api_config.model,
         api_config.max_tokens,
         api_config.temperature,
+        request_body.thinking.kind,
         request_body.messages.len()
     );
+    if api_config.thinking {
+        // 官方文档：思考模式下 temperature 不生效（不报错，但会被忽略）
+        log::debug!("思考模式已开启，temperature={} 将被服务端忽略", api_config.temperature);
+    }
 
     let url = format!("{}/chat/completions", api_config.base_url.trim_end_matches('/'));
     let auth = format!("Bearer {}", api_key);
@@ -227,8 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_messages_includes_video_and_context() {
-        let ctx = vec![Comment {
+    fn test_build_messages_includes_video_and_context() {        let ctx = vec![Comment {
             comment_id: "1".into(),
             content: "旧评论".into(),
             user: "小明".into(),
@@ -244,6 +272,80 @@ mod tests {
         assert!(msgs[1].1.contains("标题"));
         assert!(msgs[1].1.contains("简介"));
         assert!(msgs[1].1.contains("小明: 旧评论"));
+    }
+
+    /// 请求体必须在默认情况下**显式关闭**思考模式。
+    ///
+    /// 线上模型的默认值是开启（effort = high），若不显式声明就会退回到
+    /// 思考模式：temperature 被忽略、思维链占用输出预算、回复变慢。
+    #[test]
+    fn test_request_body_disables_thinking_by_default() {
+        let cfg = DeepseekConfig::default();
+        assert!(!cfg.thinking, "默认应为关闭思考模式");
+
+        let body = build_request(&cfg, Vec::new());
+        let json = serde_json::to_string(&body).expect("应能序列化请求体");
+        assert!(
+            json.contains(r#""thinking":{"type":"disabled"}"#),
+            "请求体应显式关闭思考模式: {}",
+            json
+        );
+    }
+
+    /// 打开开关后请求体应声明 enabled
+    #[test]
+    fn test_request_body_enables_thinking_when_configured() {
+        let cfg = DeepseekConfig {
+            thinking: true,
+            ..Default::default()
+        };
+        let body = build_request(&cfg, Vec::new());
+        let json = serde_json::to_string(&body).expect("应能序列化请求体");
+        assert!(
+            json.contains(r#""thinking":{"type":"enabled"}"#),
+            "请求体应声明开启思考模式: {}",
+            json
+        );
+    }
+
+    /// 请求体应带上模型名、max_tokens、temperature（与非思考模式配合生效）
+    #[test]
+    fn test_request_body_carries_configured_values() {
+        let cfg = DeepseekConfig {
+            model: "deepseek-flash".into(),
+            max_tokens: 800,
+            temperature: 0.5,
+            ..Default::default()
+        };
+        let body = build_request(&cfg, Vec::new());
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains(r#""model":"deepseek-flash""#), "{}", json);
+        assert!(json.contains(r#""max_tokens":800"#), "{}", json);
+        assert!(json.contains(r#""temperature":0.5"#), "{}", json);
+    }
+
+    /// 旧配置没有 thinking 字段时，必须回落到「关闭」而不是退回服务端默认
+    #[test]
+    fn test_legacy_config_without_thinking_field_defaults_to_disabled() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            deepseek: DeepseekConfig,
+        }
+        let w: Wrapper =
+            toml::from_str("[deepseek]\napi_key = \"sk-x\"\nmodel = \"deepseek-flash\"\n").unwrap();
+        assert!(!w.deepseek.thinking, "缺字段时应回落到关闭");
+    }
+
+    /// 显式写 true 时能正确解析
+    #[test]
+    fn test_explicit_thinking_true_is_parsed() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            deepseek: DeepseekConfig,
+        }
+        let w: Wrapper =
+            toml::from_str("[deepseek]\napi_key = \"sk-x\"\nthinking = true\n").unwrap();
+        assert!(w.deepseek.thinking);
     }
 
     /// 真实 API 测试——需要有网络和有效 Key

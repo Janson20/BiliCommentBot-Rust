@@ -105,6 +105,10 @@
           on:input={(e) => setField(cfg.deepseek, "max_tokens", Number(e.target.value))} /></div>
         <div class="field"><label for="cfg-ds-temp">温度</label><input id="cfg-ds-temp" type="number" step="0.1" min="0" max="1" value={field(cfg.deepseek, "temperature")}
           on:input={(e) => setField(cfg.deepseek, "temperature", parseFloat(e.target.value) || 0.7)} /></div>
+        <label class="checkbox"><input type="checkbox" checked={boolField(cfg.deepseek, "thinking")}
+          on:change={(e) => setField(cfg.deepseek, "thinking", e.target.checked)} /> 使用思考模式</label>
+        <p class="hint-note">新模型默认开启思考模式：先输出思维链再回复，更慢、更耗 token，
+          且官方说明思考模式下「温度」会被忽略。评论自动回复建议保持关闭。</p>
         <div class="field"><label for="cfg-ds-prompt">系统提示词</label><textarea id="cfg-ds-prompt" rows="3" value={field(cfg.deepseek, "system_prompt")}
           on:input={(e) => setField(cfg.deepseek, "system_prompt", e.target.value)}></textarea></div>
 
@@ -237,6 +241,7 @@
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 0.82rem; color: #8aa0b8; margin-bottom: 4px; }
   .field label .hint { color: #5a7a9a; font-size: 0.72rem; }
+  .hint-note { color: #5a7a9a; font-size: 0.72rem; line-height: 1.55; margin: -4px 0 14px; }
   .field input, .field textarea, .field select {
     width: 100%; padding: 8px 10px; border-radius: 6px;
     border: 1px solid #1e3a5f; background: #0d1b2a; color: #e0e8f0;

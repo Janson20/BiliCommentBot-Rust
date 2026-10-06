@@ -115,6 +115,14 @@ pub struct DeepseekConfig {
     pub max_tokens: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// 是否使用「思考模式」。
+    ///
+    /// 2026-09-10 起线上模型**默认开启**思考模式（effort = high）：模型先输出一段
+    /// 思维链再给正式回复。对评论自动回复这种场景并不划算，而且官方文档明确说明
+    /// **思考模式下 `temperature` 不生效**（设了不报错但会被忽略），思维链还会占用
+    /// 输出预算、拉长响应时间。因此本项目的默认值是 `false`（关闭）。
+    #[serde(default = "default_thinking")]
+    pub thinking: bool,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
 }
@@ -127,6 +135,7 @@ impl Default for DeepseekConfig {
             model: default_deepseek_model(),
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
+            thinking: default_thinking(),
             system_prompt: default_system_prompt(),
         }
     }
@@ -145,7 +154,7 @@ pub struct OllamaConfig {
     #[serde(default)]
     pub system_prompt: String,
     /// 单次生成的最大 token 数
-    #[serde(default = "default_max_tokens")]
+    #[serde(default = "default_ollama_max_tokens")]
     pub max_tokens: u32,
     /// 采样温度
     #[serde(default = "default_temperature")]
@@ -159,7 +168,7 @@ impl Default for OllamaConfig {
             model: default_ollama_model(),
             timeout_secs: default_ollama_timeout(),
             system_prompt: String::new(),
-            max_tokens: default_max_tokens(),
+            max_tokens: default_ollama_max_tokens(),
             temperature: default_temperature(),
         }
     }
@@ -423,9 +432,19 @@ fn default_cache_expire() -> u64 { 300 }
 fn default_video_cache_expire() -> u64 { 43200 }
 fn default_video_cache_file() -> String { "video_cache.json".into() }
 fn default_deepseek_base_url() -> String { "https://api.deepseek.com".into() }
-fn default_deepseek_model() -> String { "deepseek-v4-flash".into() }
-fn default_max_tokens() -> u32 { 200 }
+/// 当前 DeepSeek 模型名。
+///
+/// 2026-09-10 起 V4.1 Flash 上线，官方模型名为 `deepseek-flash`；
+/// 上一代的 `deepseek-v4-flash` 已退役（旧名仅暂时转发到 V4.1 Flash），
+/// 因此这里改用新名字。
+fn default_deepseek_model() -> String { "deepseek-flash".into() }
+/// DeepSeek 单次回复的最大 token 数
+fn default_max_tokens() -> u32 { 800 }
+/// Ollama 单次生成的最大 token 数（本地模型较慢，保守一些）
+fn default_ollama_max_tokens() -> u32 { 200 }
 fn default_temperature() -> f64 { 0.7 }
+/// 默认关闭思考模式：评论回复要的是快、短、可复现，且 temperature 要能生效
+fn default_thinking() -> bool { false }
 fn default_system_prompt() -> String {
     "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。".into()
 }
@@ -583,6 +602,35 @@ mod tests {
         assert_eq!(parsed.bilibili.check_interval, cfg.bilibili.check_interval);
         assert_eq!(parsed.deepseek.model, cfg.deepseek.model);
         assert_eq!(parsed.app.close_action, cfg.app.close_action);
+    }
+
+    /// DeepSeek 默认值必须跟上官方的模型更名（2026-09-10：V4.1 Flash = `deepseek-flash`）
+    #[test]
+    fn test_deepseek_defaults_follow_official_model_rename() {
+        let cfg = RawConfig::default();
+        assert_eq!(
+            cfg.deepseek.model, "deepseek-flash",
+            "旧名 deepseek-v4-flash 已退役，默认值应为官方新名"
+        );
+        assert_eq!(cfg.deepseek.base_url, "https://api.deepseek.com");
+        assert_eq!(cfg.deepseek.max_tokens, 800);
+        assert_eq!(cfg.deepseek.temperature, 0.7);
+    }
+
+    /// 改 max_tokens 默认值时不应顺手改动 Ollama 的默认值（本地模型保守一些）
+    #[test]
+    fn test_ollama_max_tokens_default_is_independent() {
+        let cfg = RawConfig::default();
+        assert_eq!(cfg.ollama.max_tokens, 200, "Ollama 默认应保持 200");
+        assert_eq!(cfg.deepseek.max_tokens, 800, "DeepSeek 默认应为 800");
+    }
+
+    /// 未写 model 字段的旧配置应回落到新默认值
+    #[test]
+    fn test_missing_model_falls_back_to_new_default() {
+        let parsed: RawConfig = toml::from_str("[deepseek]\napi_key = \"sk-x\"\n").unwrap();
+        assert_eq!(parsed.deepseek.model, "deepseek-flash");
+        assert_eq!(parsed.deepseek.max_tokens, 800);
     }
 
     /// 旧版（无 [app] 段）配置文件仍应能正常解析
