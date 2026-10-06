@@ -86,13 +86,13 @@
     {loading ? "..." : $isRunning ? "⏹ 停止" : "▶ 启动"}
   </button>
   <button class="btn-secondary" on:click={refreshVideos} disabled={videosLoading}>
-    {videosLoading ? "⏳ 刷新中..." : "🔄 刷新视频列表"}
+    {videosLoading ? "刷新中..." : "🔄 刷新视频列表"}
   </button>
   <button class="btn-secondary" on:click={manualCheck} disabled={!$isRunning}>⚡ 立即检查</button>
 </div>
 
 <div class="section">
-  <h2>🎬 视频列表{#if $videos.length > 0}<span class="section-note">共 {$videos.length} 个</span>{/if}</h2>
+  <h2>视频列表{#if $videos.length > 0}<span class="section-note">共 {$videos.length} 个</span>{/if}</h2>
   {#if videosLoading}
     <div class="empty">正在获取视频列表...</div>
   {:else if $videos.length === 0}

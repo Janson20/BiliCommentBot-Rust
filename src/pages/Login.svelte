@@ -167,11 +167,11 @@
       <div class="qr-actions">
         {#if qrBase64}
           <button class="btn-outline" on:click={startQrLogin} disabled={qrLoading}>
-            {qrLoading ? "⏳ 生成中..." : "🔄 重新生成二维码"}
+            {qrLoading ? "生成中..." : "重新生成二维码"}
           </button>
         {:else}
           <button class="btn-primary" on:click={startQrLogin} disabled={qrLoading}>
-            {qrLoading ? "⏳ 生成中..." : "📱 生成二维码"}
+            {qrLoading ? "生成中..." : "📱 生成二维码"}
           </button>
         {/if}
       </div>

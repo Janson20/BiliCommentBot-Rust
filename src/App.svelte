@@ -207,7 +207,7 @@
     <div class="main-content">
       {#if alertInfo}
         <div class="alert-banner" class:error={alertInfo.level === "error"} role="alert">
-          <span class="alert-icon">{alertInfo.level === "error" ? "⛔" : "⚠️"}</span>
+          <span class="alert-badge">{alertInfo.level === "error" ? "错误" : "警告"}</span>
           <div class="alert-body">
             <strong>{alertInfo.title}</strong>
             {#if alertInfo.message}<span>{alertInfo.message}</span>{/if}
@@ -257,7 +257,10 @@
     font-size: 0.85rem; line-height: 1.5;
   }
   .alert-banner.error { border-color: #7a2b2b; background: #2b1616; color: #f0a0a0; }
-  .alert-icon { flex-shrink: 0; }
+  .alert-badge {
+    flex-shrink: 0; padding: 1px 7px; border-radius: 4px;
+    border: 1px solid currentColor; font-size: 0.72rem; line-height: 1.6;
+  }
   .alert-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
   .alert-body strong { font-size: 0.88rem; }
   .alert-body span { opacity: 0.9; }
