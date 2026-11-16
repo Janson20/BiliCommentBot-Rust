@@ -1,9 +1,32 @@
 <script>
+  import { onMount, onDestroy } from "svelte";
   import { isRunning, botStats, logs, videos, showToast } from "../lib/stores.js";
-  import { startBot, stopBot, getVideoList, triggerManualCheck } from "../lib/api.js";
+  import { startBot, stopBot, getVideoList, triggerManualCheck, getAiStats } from "../lib/api.js";
 
   let loading = false;
   let videosLoading = false;
+  let aiStats = null;
+  let aiTimer = null;
+
+  async function refreshAiStats() {
+    try {
+      aiStats = await getAiStats();
+    } catch (_) {
+      // 统计失败不影响主界面
+    }
+  }
+
+  onMount(() => {
+    refreshAiStats();
+    aiTimer = setInterval(refreshAiStats, 30000);
+  });
+
+  onDestroy(() => {
+    if (aiTimer) clearInterval(aiTimer);
+  });
+
+  const formatInt = (n) => Number(n || 0).toLocaleString("zh-CN");
+  const formatCost = (n) => Number(n || 0).toFixed(4);
 
   async function handleToggle() {
     loading = true;
@@ -48,7 +71,7 @@
   $: recentLogs = $logs.slice(-6).reverse();
 </script>
 
-<h1>📊 仪表盘</h1>
+<h1>仪表盘</h1>
 
 <div class="grid-cards">
   <div class="card">
@@ -83,13 +106,37 @@
     on:click={handleToggle}
     disabled={loading}
   >
-    {loading ? "..." : $isRunning ? "⏹ 停止" : "▶ 启动"}
+    {loading ? "..." : $isRunning ? "停止" : "启动"}
   </button>
   <button class="btn-secondary" on:click={refreshVideos} disabled={videosLoading}>
-    {videosLoading ? "刷新中..." : "🔄 刷新视频列表"}
+    {videosLoading ? "刷新中..." : "刷新视频列表"}
   </button>
-  <button class="btn-secondary" on:click={manualCheck} disabled={!$isRunning}>⚡ 立即检查</button>
+  <button class="btn-secondary" on:click={manualCheck} disabled={!$isRunning}>立即检查</button>
 </div>
+
+{#if aiStats}
+  <div class="section ai-section">
+    <h2>AI 用量（今日）</h2>
+    <div class="ai-grid">
+      <div class="ai-item"><span>调用次数</span><strong>{formatInt(aiStats.today.requests)}</strong></div>
+      <div class="ai-item"><span>Tokens</span><strong>{formatInt(aiStats.today.total_tokens)}</strong></div>
+      <div class="ai-item"><span>跳过评论</span><strong>{formatInt(aiStats.today.skips)}</strong></div>
+      <div class="ai-item"><span>失败</span><strong class:warn={aiStats.today.failures > 0}>{formatInt(aiStats.today.failures)}</strong></div>
+      <div class="ai-item">
+        <span>估算费用</span>
+        <strong>{aiStats.prices.input_per_million > 0 || aiStats.prices.output_per_million > 0 ? "¥" + formatCost(aiStats.today.estimated_cost) : "未设置单价"}</strong>
+      </div>
+    </div>
+    {#if aiStats.budget.daily_tokens > 0}
+      <div class="budget-line">
+        <span>日预算：{formatInt(aiStats.budget.used_tokens)} / {formatInt(aiStats.budget.daily_tokens)} tokens</span>
+        <span class:budget-warn={aiStats.budget.exhausted}>
+          {aiStats.budget.exhausted ? "已用尽，今日暂停 AI" : "剩余 " + formatInt(aiStats.budget.remaining_tokens)}
+        </span>
+      </div>
+    {/if}
+  </div>
+{/if}
 
 <div class="section">
   <h2>视频列表{#if $videos.length > 0}<span class="section-note">共 {$videos.length} 个</span>{/if}</h2>
@@ -117,7 +164,7 @@
 </div>
 
 <div class="section">
-  <h2>📜 最近日志</h2>
+  <h2>最近日志</h2>
   <div class="log-list">
     {#each recentLogs as log}
       <div class="log-entry log-{log.level.toLowerCase()}">
@@ -141,7 +188,7 @@
     margin-bottom: 20px;
   }
   .card {
-    background: linear-gradient(135deg, #16213e 0%, #1a2a4a 100%);
+    background: #16213e;
     border: 1px solid #1e3a5f;
     border-radius: 10px;
     padding: 16px;
@@ -213,4 +260,19 @@
   .log-preview .log-level { color: #8aa0b8; }
   .log-msg { color: #c0d0e0; word-break: break-all; }
   .empty { text-align: center; color: #5a7a9a; padding: 16px; }
+  .ai-section { margin-bottom: 24px; }
+  .ai-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px; background: #0d1b2a; border: 1px solid #1e3a5f;
+    border-radius: 8px; padding: 12px 14px;
+  }
+  .ai-item { display: flex; flex-direction: column; gap: 4px; }
+  .ai-item span { font-size: 0.75rem; color: #8aa0b8; }
+  .ai-item strong { font-size: 1rem; color: #e0e8f0; }
+  .ai-item strong.warn { color: #e74c3c; }
+  .budget-line {
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    margin-top: 8px; font-size: 0.75rem; color: #8aa0b8;
+  }
+  .budget-warn { color: #e74c3c; }
 </style>

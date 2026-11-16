@@ -80,10 +80,45 @@ system_prompt = ""
 max_tokens = 200
 # 采样温度。
 temperature = 0.7
+# 上下文窗口（Ollama 的 num_ctx）。提示词包含楼中楼、风格示例与评论，
+# 默认 2048 的窗口容易被截断，这里给本地模型留足空间。
+num_ctx = 8192
+
+[openai]
+# OpenAI 兼容端点：OpenAI / OpenRouter / SiliconFlow / LM Studio / vLLM 等。
+# base_url 应包含版本前缀，程序会在其后拼接 /chat/completions 与 /models。
+base_url = "https://api.openai.com/v1"
+# API Key。本地服务（LM Studio / vLLM）通常可以留空。
+api_key = ""
+# 模型名。留空时该 provider 视为「未配置」，不会参与启动与回退。
+model = ""
+# 单次生成的最大 token 数。
+max_tokens = 800
+# 采样温度。
+temperature = 0.7
+# 系统提示词。留空则沿用 [deepseek].system_prompt。
+system_prompt = ""
+# 是否请求 JSON 模式（response_format = json_object）。
+# 个别兼容端点不支持该字段时改为 false，程序仍会做容错解析。
+json_mode = true
+# token 上限字段名："max_tokens"（多数端点）或 "max_completion_tokens"（o 系列推理模型）。
+token_param = "max_tokens"
+# 推理强度："low" / "medium" / "high"；留空则不发送。
+# 设置后不再发送 temperature（新版推理模型通常不接受自定义温度）。
+reasoning_effort = ""
 
 [ai]
-# 使用哪个 AI 引擎："deepseek"（云端）或 "ollama"（本地）。
+# 使用哪个 AI 引擎："deepseek"（云端）、"ollama"（本地）或 "openai"（OpenAI 兼容端点）。
 provider = "deepseek"
+# 主 provider 重试后仍失败时回退到哪个：none / deepseek / ollama / openai。
+fallback = "none"
+# DeepSeek / OpenAI 兼容端点的单次请求超时（秒）。Ollama 使用自己的 timeout_secs。
+request_timeout_secs = 45
+# 每日 token 预算（输入 + 输出，0 = 不限制）。超限后当天不再调用 AI。
+daily_token_budget = 0
+# 输入 / 输出 token 单价（元 / 百万 token，0 = 不估算费用）。
+input_price_per_million = 0.0
+output_price_per_million = 0.0
 
 [reply]
 # 自动回复总开关。关闭后机器人只抓取不回复。
@@ -96,8 +131,14 @@ max_process = 10
 reply_delay = 2
 # 回复成功后是否给该评论点赞。
 like_enabled = false
-# 附带多少条上下文评论给 AI 参考（0=不附带）。
+# 附带多少条同视频的其他评论给 AI 参考（0=不附带）。
 context_comments_count = 0
+# 楼中楼上下文最多向上追溯多少层父评论（0=不附带父评论链）。
+thread_context_max = 6
+# 从历史回复中取多少条作为风格示例（0=关闭；只发送回复正文，不含用户信息）。
+style_examples_count = 2
+# 新回复与近期回复的相似度阈值（0~1），超过则重写一次；0=关闭去重。
+dedupe_threshold = 0.82
 # 只处理指定视频，填 BVID（如 BV1xx411c7mD）；留空表示处理全部视频。
 only_bvid = ""
 # 是否点赞评论者的最新视频。
@@ -110,6 +151,22 @@ chained_reply_enabled = true
 max_reply_depth = 3
 # 预览模式：走完整流程生成回复并写日志，但不实际发表、不记录历史。
 dry_run = false
+
+[reply.ai_guard]
+# AI 安全门：要求模型输出结构化 JSON 决策，广告/引战/敏感/无意义评论直接跳过。
+# 默认开启；关闭后恢复为「模型直接返回回复正文」。
+enabled = true
+# 允许跳过的风险类别。
+skip_spam = true
+skip_toxic = true
+skip_sensitive = true
+skip_meaningless = true
+# 跳过的置信度阈值（0~1）。低于该值的跳过判断不生效，宁可回复也不误伤。
+min_confidence = 0.6
+# 置信度不足时追加一次复核调用。
+review_low_confidence = true
+# 把跳过的评论写入数据库，下一轮不再重复调用 AI。
+store_skips = true
 
 [reply.keyword_filter]
 # 关键词过滤总开关。

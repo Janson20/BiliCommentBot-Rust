@@ -12,6 +12,11 @@ export function isAiConfigured(cfg) {
     return !!String(cfg?.ollama?.base_url || "").trim()
       && !!String(cfg?.ollama?.model || "").trim();
   }
+  if (provider === "openai" || provider === "openai_compatible") {
+    // 本地 OpenAI 兼容服务通常不需要 API Key，因此只要求地址与模型名
+    return !!String(cfg?.openai?.base_url || "").trim()
+      && !!String(cfg?.openai?.model || "").trim();
+  }
   return !!String(cfg?.deepseek?.api_key || "").trim();
 }
 

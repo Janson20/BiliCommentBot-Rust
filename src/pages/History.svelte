@@ -1,12 +1,22 @@
 <script>
   import { onMount } from "svelte";
-  import { getHistoryByDate, clearHistory } from "../lib/api.js";
+  import {
+    getHistoryByDate,
+    clearHistory,
+    getIgnoredComments,
+    clearIgnoredComments,
+  } from "../lib/api.js";
   import { showToast } from "../lib/stores.js";
   import CommentNode from "../components/CommentNode.svelte";
 
   let groups = [];
   let expanded = {};
   let loading = false;
+
+  // 跳过记录（AI 安全门）
+  let view = "replies";
+  let ignored = [];
+  let ignoredLoading = false;
 
   // ── 清除历史：沿用「设置 → 清空所有数据」的输入确认流程 ──
   let showClearConfirm = false;
@@ -24,6 +34,33 @@
       showToast("error", "加载失败: " + e);
     }
     loading = false;
+  }
+
+  async function loadIgnored() {
+    ignoredLoading = true;
+    try {
+      const result = await getIgnoredComments(100);
+      ignored = result?.items || [];
+    } catch (e) {
+      showToast("error", "加载跳过记录失败: " + e);
+    }
+    ignoredLoading = false;
+  }
+
+  function switchView(next) {
+    view = next;
+    if (next === "ignored") loadIgnored();
+    if (next === "replies") loadHistory();
+  }
+
+  async function doClearIgnored() {
+    try {
+      await clearIgnoredComments();
+      ignored = [];
+      showToast("success", "跳过记录已清空");
+    } catch (e) {
+      showToast("error", "清空失败: " + e);
+    }
   }
 
   function toggle(date) {
@@ -61,18 +98,29 @@
   }
 </script>
 
-<h1>📋 回复历史</h1>
+<h1>回复记录</h1>
+
+<div class="view-tabs">
+  <button class="view-tab" class:active={view === "replies"} on:click={() => switchView("replies")}>回复历史</button>
+  <button class="view-tab" class:active={view === "ignored"} on:click={() => switchView("ignored")}>AI 跳过记录</button>
+</div>
 
 <div class="toolbar">
-  <span class="total">{loading ? "加载中..." : `共 ${groups.length} 天`}</span>
-  <button class="btn-refresh" on:click={loadHistory}>🔄 刷新</button>
-  <button class="btn-danger" on:click={openClearConfirm} disabled={clearing}>🗑 清除历史...</button>
+  {#if view === "replies"}
+    <span class="total">{loading ? "加载中..." : `共 ${groups.length} 天`}</span>
+    <button class="btn-refresh" on:click={loadHistory}>刷新</button>
+    <button class="btn-danger" on:click={openClearConfirm} disabled={clearing}>清除历史...</button>
+  {:else}
+    <span class="total">{ignoredLoading ? "加载中..." : `共 ${ignored.length} 条`}</span>
+    <button class="btn-refresh" on:click={loadIgnored} disabled={ignoredLoading}>刷新</button>
+    <button class="btn-danger" on:click={doClearIgnored} disabled={ignored.length === 0}>清空跳过记录</button>
+  {/if}
 </div>
 
 {#if showClearConfirm}
   <div class="confirm-panel">
     <p class="confirm-desc">
-      此操作将清空全部回复历史记录，<strong>不可撤销</strong>。<br />
+      此操作将清空全部回复历史记录与 AI 跳过记录，<strong>不可撤销</strong>。<br />
       请输入 "<strong>{CONFIRM_PHRASE}</strong>" 以确认：
     </p>
     <div class="confirm-row">
@@ -95,31 +143,51 @@
   </div>
 {/if}
 
-<div class="cards">
-  {#each groups as group (group.date)}
-    <div class="card" class:expanded={expanded[group.date]}>
-      <button class="card-header" on:click={() => toggle(group.date)}>
-        <span class="chevron">{expanded[group.date] ? "▼" : "▶"}</span>
-        <div class="card-info">
-          <span class="card-title">{group.date}</span>
-          <span class="card-meta">{group.comment_count} 条根评论</span>
-        </div>
-      </button>
+{#if view === "replies"}
+  <div class="cards">
+    {#each groups as group (group.date)}
+      <div class="card" class:expanded={expanded[group.date]}>
+        <button class="card-header" on:click={() => toggle(group.date)}>
+          <span class="chevron">{expanded[group.date] ? "▼" : "▶"}</span>
+          <div class="card-info">
+            <span class="card-title">{group.date}</span>
+            <span class="card-meta">{group.comment_count} 条根评论</span>
+          </div>
+        </button>
 
-      {#if expanded[group.date]}
-        <div class="card-body">
-          {#each group.comments as comment}
-            <CommentNode {comment} depth={0} />
-          {/each}
-        </div>
-      {/if}
-    </div>
-  {/each}
+        {#if expanded[group.date]}
+          <div class="card-body">
+            {#each group.comments as comment}
+              <CommentNode {comment} depth={0} />
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/each}
 
-  {#if groups.length === 0}
-    <div class="empty">{loading ? "加载中..." : "暂无回复记录"}</div>
-  {/if}
-</div>
+    {#if groups.length === 0}
+      <div class="empty">{loading ? "加载中..." : "暂无回复记录"}</div>
+    {/if}
+  </div>
+{:else}
+  <div class="cards">
+    {#each ignored as item (item.comment_id)}
+      <div class="ignored-item">
+        <div class="ignored-head">
+          <span class="risk risk-{item.risk}">{item.risk || "unknown"}</span>
+          <span class="ignored-user">{item.user || "未知用户"}</span>
+          <span class="ignored-time">{item.created_at_text}</span>
+        </div>
+        <div class="ignored-content">{item.content || "（无正文）"}</div>
+        <div class="ignored-reason">原因：{item.reason || "未说明"}</div>
+      </div>
+    {/each}
+
+    {#if ignored.length === 0}
+      <div class="empty">{ignoredLoading ? "加载中..." : "暂无跳过记录"}</div>
+    {/if}
+  </div>
+{/if}
 
 <style>
   h1 { font-size: 1.5rem; color: #00b4d8; margin-bottom: 14px; }
@@ -150,7 +218,32 @@
   }
   .confirm-input:focus { border-color: #e74c3c; }
   .confirm-input:disabled { opacity: 0.6; }
+  .view-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .view-tab {
+    padding: 6px 16px; border: 1px solid #1e3a5f; border-radius: 6px;
+    background: #0d1b2a; color: #8aa0b8; cursor: pointer; font-size: 0.82rem;
+  }
+  .view-tab.active { background: #00b4d8; border-color: #00b4d8; color: #fff; }
   .cards { display: flex; flex-direction: column; gap: 8px; }
+  .ignored-item {
+    background: #16213e; border: 1px solid #1e3a5f; border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .ignored-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .risk {
+    font-size: 0.7rem; padding: 1px 8px; border-radius: 10px;
+    background: #e74c3c22; color: #e74c3c;
+  }
+  .risk-spam, .risk-toxic { background: #e74c3c22; color: #e74c3c; }
+  .risk-sensitive { background: #f0c04022; color: #f0c040; }
+  .risk-meaningless { background: #8aa0b822; color: #8aa0b8; }
+  .ignored-user { color: #b0c4de; font-size: 0.8rem; }
+  .ignored-time { margin-left: auto; color: #5a7a9a; font-size: 0.72rem; }
+  .ignored-content {
+    color: #e0e8f0; font-size: 0.85rem; line-height: 1.55;
+    margin-bottom: 6px; white-space: pre-wrap; word-break: break-word;
+  }
+  .ignored-reason { color: #8aa0b8; font-size: 0.75rem; }
   .card {
     background: #16213e; border: 1px solid #1e3a5f; border-radius: 10px;
     overflow: hidden; transition: 0.15s;

@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "bili-comment-bot-rs"
-version = "0.1.5"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

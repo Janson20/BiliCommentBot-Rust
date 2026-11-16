@@ -7,15 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+use crate::ai::{self, AiAction};
 use crate::comment_fetcher::{self, Comment};
 use crate::config::{
-    AiProvider, KeywordFilterConfig, LengthFilterConfig, RawConfig, ReplyConfig, UserFilterConfig,
+    KeywordFilterConfig, LengthFilterConfig, RawConfig, ReplyConfig, UserFilterConfig,
 };
 use crate::cookie::CookieManager;
-use crate::deepseek;
 use crate::history::HistoryManager;
 use crate::http_client;
-use crate::ollama;
 use crate::paths;
 use crate::rate_limiter::{RateLimiter, RetryPolicy};
 use crate::reply;
@@ -88,6 +87,8 @@ pub struct BotState {
     pub history_available: bool,
     /// 上次检查 Cookie 状态的时间，用于 `cookie_refresh_interval` 节流
     pub last_cookie_check: Mutex<Option<Instant>>,
+    /// 最近一次「AI 日预算用尽」提醒的日期（同一天只提醒一次）
+    pub ai_budget_alert_day: Mutex<Option<String>>,
 }
 
 impl BotState {
@@ -612,6 +613,24 @@ async fn process_comments(
             }
         }
 
+        // 已被安全门跳过的评论不再重复调用 AI（否则每轮都会重新烧 token）
+        {
+            let history = state.history.lock().await;
+            if history.is_ignored(&comment.comment_id) {
+                skipped_count += 1;
+                state.send_log(
+                    "DEBUG",
+                    &format!(
+                        "[{}/{}] ⏭ 跳过安全门已标记的评论: {}",
+                        i + 1,
+                        total_comments,
+                        comment.user
+                    ),
+                );
+                continue;
+            }
+        }
+
         // 跳过本人评论（仅非预览模式）
         if !is_dry_run && !config.bilibili.uid.is_empty() && comment.uid == config.bilibili.uid {
             skipped_count += 1;
@@ -638,57 +657,134 @@ async fn process_comments(
         // 频率控制等待
         state.rate_limiter.wait().await;
 
-        // 收集上下文评论（当前评论之前的 N 条 + 父评论）
-        let context = collect_context(comments, comment, config.reply.context_comments_count);
-        if !context.is_empty() {
-            state.send_log("DEBUG", &format!("  附带 {} 条上下文评论", context.len()));
+        // 上下文：楼中楼父子链 + 当前评论之前的 N 条（两者去重）
+        let thread = collect_thread(comments, comment, config.reply.thread_context_max);
+        let mut recent = collect_context(comments, comment, config.reply.context_comments_count);
+        if !thread.is_empty() {
+            let thread_ids: HashSet<&str> =
+                thread.iter().map(|c| c.comment_id.as_str()).collect();
+            recent.retain(|c| !thread_ids.contains(c.comment_id.as_str()));
+        }
+        if !thread.is_empty() || !recent.is_empty() {
+            state.send_log(
+                "DEBUG",
+                &format!(
+                    "  附带上下文: 对话链 {} 条, 其他评论 {} 条",
+                    thread.len(),
+                    recent.len()
+                ),
+            );
         }
 
-        // 生成 AI 回复
-        let ai_provider_name = match config.ai.provider {
-            AiProvider::Deepseek => "DeepSeek",
-            AiProvider::Ollama => "Ollama",
-        };
-        state.send_log("INFO", &format!("  => 调用 {} 生成回复...", ai_provider_name));
-        let reply_text = match config.ai.provider {
-            AiProvider::Deepseek => {
-                deepseek::generate_reply(
-                    client,
-                    &config.deepseek,
-                    &comment.content,
-                    &context,
-                    Some(&video.title),
-                    Some(&video.desc),
-                    policy,
-                ).await
-            }
-            AiProvider::Ollama => {
-                // 沿用 deepseek 段的系统提示词，除非 ollama 段自己配了一份，
-                // 否则「换成本地模型后人设就失效」会让人莫名其妙。
-                let system_prompt = if config.ollama.system_prompt.trim().is_empty() {
-                    config.deepseek.system_prompt.as_str()
-                } else {
-                    config.ollama.system_prompt.as_str()
-                };
-                ollama::generate_reply(
-                    client,
-                    &config.ollama,
-                    &comment.content,
-                    &context,
-                    Some(&video.title),
-                    Some(&video.desc),
-                    system_prompt,
-                    policy,
-                ).await
-            }
+        // 历史回复：风格示例 + 去重清单（只发送回复正文，不含用户信息）
+        let (style_examples, avoid_replies) = {
+            let history = state.history.lock().await;
+            let styles = history.recent_replies(config.reply.style_examples_count as usize);
+            let avoid = if config.reply.dedupe_threshold > 0.0 {
+                history.recent_replies(8)
+            } else {
+                Vec::new()
+            };
+            (styles, avoid)
         };
 
-        let reply_text = match reply_text {
-            Ok(t) => {
-                state.send_log("DEBUG", &format!("  AI 原始回复: \"{}\"", truncate_str(&t, 80)));
-                t
+        // 日预算：超限后当天不再调用 AI，避免费用失控
+        let usage_today = { state.history.lock().await.ai_usage_today() };
+        if ai::budget_exhausted(config, usage_today.total_tokens()) {
+            let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let should_alert = {
+                let mut last = state.ai_budget_alert_day.lock().await;
+                if last.as_deref() != Some(day.as_str()) {
+                    *last = Some(day);
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_alert {
+                state.send_alert(
+                    "warning",
+                    "AI 日预算已用尽",
+                    &format!(
+                        "今日已使用 {} tokens，超过配置的 {}。机器人今天不会再调用 AI，明天自动恢复；可在「配置 → AI」中调整 daily_token_budget。",
+                        usage_today.total_tokens(),
+                        config.ai.daily_token_budget
+                    ),
+                );
+            }
+            state.send_log(
+                "WARN",
+                &format!(
+                    "AI 日预算已用尽（{}/{} tokens），本轮停止处理评论",
+                    usage_today.total_tokens(),
+                    config.ai.daily_token_budget
+                ),
+            );
+            break;
+        }
+
+        state.send_log(
+            "INFO",
+            &format!("  => 调用 {} 生成回复...", config.ai.provider.label()),
+        );
+        let ai_result = ai::generate_reply(
+            client,
+            config,
+            comment,
+            &thread,
+            &recent,
+            Some(&video.title),
+            Some(&video.desc),
+            &style_examples,
+            &avoid_replies,
+            policy,
+        )
+        .await;
+
+        let ai_result = match ai_result {
+            Ok(result) => {
+                {
+                    let history = state.history.lock().await;
+                    history.record_ai_usage(
+                        result.provider.label(),
+                        &result.model,
+                        result.usage.prompt_tokens,
+                        result.usage.completion_tokens,
+                        true,
+                        result.action == AiAction::Skip,
+                    );
+                }
+                if result.fallback_used {
+                    state.send_log(
+                        "WARN",
+                        &format!("  主 provider 失败，已回退到 {}", result.provider.label()),
+                    );
+                }
+                state.send_log(
+                    "DEBUG",
+                    &format!(
+                        "  AI 决策: {:?} risk={} confidence={:.2}{} tokens={}",
+                        result.action,
+                        result.risk,
+                        result.confidence,
+                        if result.reviewed { "（已复核）" } else { "" },
+                        result.usage.total()
+                    ),
+                );
+                result
             }
             Err(e) => {
+                {
+                    let history = state.history.lock().await;
+                    history.record_ai_usage(
+                        config.ai.provider.label(),
+                        &config.ai_model(config.ai.provider),
+                        0,
+                        0,
+                        false,
+                        false,
+                    );
+                }
                 // AI 失败**不计入** B站 请求的失败计数：否则一次 LLM 故障会把
                 // 抓评论的间隔一路推到 10 倍，纯属误伤。
                 state.send_log("ERROR", &format!("AI回复生成失败: {}", e));
@@ -696,7 +792,23 @@ async fn process_comments(
             }
         };
 
-        // 跳过空回复
+        if ai_result.action == AiAction::Skip {
+            skipped_count += 1;
+            state.send_log(
+                "INFO",
+                &format!(
+                    "  ⏭ 安全门跳过: {}（risk={}, 置信度 {:.2}）原因: {}",
+                    comment.user, ai_result.risk, ai_result.confidence, ai_result.reason
+                ),
+            );
+            if !is_dry_run && config.reply.ai_guard.store_skips {
+                let history = state.history.lock().await;
+                history.add_ignored(comment, &video.bvid, &ai_result.reason, &ai_result.risk);
+            }
+            continue;
+        }
+
+        let reply_text = ai_result.text;
         if reply_text.trim().is_empty() {
             state.send_log("WARN", &format!("AI 回复为空，跳过评论 [{}]", comment.user));
             continue;
@@ -954,6 +1066,39 @@ fn collect_context(all_comments: &[Comment], current: &Comment, max_count: u32) 
     out
 }
 
+/// 收集楼中楼的父子链（从根评论到父评论，不含当前评论）。
+///
+/// 只取 parent_id 链，不依赖列表顺序；找不到父节点或出现环时停止。
+fn collect_thread(all_comments: &[Comment], current: &Comment, max_turns: u32) -> Vec<Comment> {
+    if max_turns == 0 {
+        return Vec::new();
+    }
+
+    let mut chain: Vec<Comment> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    seen.insert(current.comment_id.as_str());
+
+    let mut parent_id = current.parent_id.as_deref();
+    while let Some(pid) = parent_id {
+        if !seen.insert(pid) {
+            break;
+        }
+        let Some(parent) = all_comments.iter().find(|c| c.comment_id == pid) else {
+            break;
+        };
+        chain.push(parent.clone());
+        parent_id = parent.parent_id.as_deref();
+    }
+
+    chain.reverse();
+    let max = max_turns as usize;
+    if chain.len() > max {
+        chain.split_off(chain.len() - max)
+    } else {
+        chain
+    }
+}
+
 /// 检查评论是否通过所有过滤器。返回 Some(原因) 表示未通过应跳过
 /// 对标 Python 版 BiliCommentBot._check_filters
 fn check_filters(reply_cfg: &ReplyConfig, comment: &Comment) -> Option<String> {
@@ -1163,6 +1308,38 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_thread_returns_root_to_parent() {
+        let all = vec![
+            cmt("1", "根评论", None, 0),
+            cmt("2", "第一次回复", Some("1"), 1),
+            cmt("3", "第二次回复", Some("2"), 2),
+            cmt("4", "当前评论", Some("3"), 3),
+        ];
+        let thread = collect_thread(&all, &all[3], 10);
+        let ids: Vec<&str> = thread.iter().map(|c| c.comment_id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "2", "3"], "应按根到父的顺序返回");
+    }
+
+    #[test]
+    fn test_collect_thread_respects_max_turns() {
+        let all = vec![
+            cmt("1", "根", None, 0),
+            cmt("2", "父", Some("1"), 1),
+            cmt("3", "当前", Some("2"), 2),
+        ];
+        let thread = collect_thread(&all, &all[2], 1);
+        let ids: Vec<&str> = thread.iter().map(|c| c.comment_id.as_str()).collect();
+        assert_eq!(ids, vec!["2"], "只保留最近的 1 层父评论");
+    }
+
+    #[test]
+    fn test_collect_thread_top_level_is_empty() {
+        let all = vec![cmt("1", "主评论", None, 0)];
+        assert!(collect_thread(&all, &all[0], 6).is_empty());
+        assert!(collect_thread(&all, &all[0], 0).is_empty());
+    }
+
+    #[test]
     fn test_round_budget_is_global() {
         let mut b = RoundBudget::new(2);
         assert!(!b.exhausted());
@@ -1320,6 +1497,7 @@ mod tests {
             rate_limiter: RateLimiter::new(2.0, 3, 5),
             history_available,
             last_cookie_check: Mutex::new(None),
+            ai_budget_alert_day: Mutex::new(None),
         })
     }
 

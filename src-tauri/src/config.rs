@@ -103,6 +103,10 @@ impl Default for VideoCacheConfig {
     }
 }
 
+/// 缺省系统提示词（配置留空时使用）
+pub const DEFAULT_SYSTEM_PROMPT: &str =
+    "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeepseekConfig {
     #[serde(default)]
@@ -159,6 +163,10 @@ pub struct OllamaConfig {
     /// 采样温度
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// 上下文窗口（Ollama 的 num_ctx）。提示词包含楼中楼、风格示例与评论，
+    /// 默认 2048 的窗口容易被截断，这里给本地模型留足空间。
+    #[serde(default = "default_ollama_num_ctx")]
+    pub num_ctx: u32,
 }
 
 impl Default for OllamaConfig {
@@ -170,6 +178,98 @@ impl Default for OllamaConfig {
             system_prompt: String::new(),
             max_tokens: default_ollama_max_tokens(),
             temperature: default_temperature(),
+            num_ctx: default_ollama_num_ctx(),
+        }
+    }
+}
+
+/// OpenAI 兼容端点配置。
+///
+/// 不绑定具体厂商：OpenAI、OpenRouter、SiliconFlow、LM Studio、vLLM 等只要实现
+/// 标准 `/chat/completions` 与 `/models` 即可接入。`base_url` 应包含版本前缀
+/// （例如 `https://api.openai.com/v1`），程序会在其后拼接路径。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAiConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_openai_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
+    /// 系统提示词。留空则沿用 `[deepseek].system_prompt`。
+    #[serde(default)]
+    pub system_prompt: String,
+    /// 是否请求 JSON 模式（`response_format: {"type":"json_object"}`）。
+    /// 个别兼容端点不支持该字段时可以关闭；程序仍会按提示词要求 JSON 并做容错解析。
+    #[serde(default = "default_true")]
+    pub json_mode: bool,
+    /// 请求体里的 token 上限字段名：`max_tokens` 或 `max_completion_tokens`。
+    /// 新版推理模型（o 系列等）通常要求后者。
+    #[serde(default = "default_openai_token_param")]
+    pub token_param: String,
+    /// 推理强度（`reasoning_effort`）。留空则不发送；可选 low / medium / high。
+    #[serde(default)]
+    pub reasoning_effort: String,
+}
+
+impl Default for OpenAiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: default_openai_base_url(),
+            model: String::new(),
+            max_tokens: default_max_tokens(),
+            temperature: default_temperature(),
+            system_prompt: String::new(),
+            json_mode: true,
+            token_param: default_openai_token_param(),
+            reasoning_effort: String::new(),
+        }
+    }
+}
+
+/// AI 回复安全门配置。
+///
+/// 开启后每次生成都会要求模型输出结构化 JSON 决策（是否回复 / 风险类别 / 置信度），
+/// 广告、引战、敏感、无意义内容会被直接跳过并记录原因，避免公开回复带来风险。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiGuardConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub skip_spam: bool,
+    #[serde(default = "default_true")]
+    pub skip_toxic: bool,
+    #[serde(default = "default_true")]
+    pub skip_sensitive: bool,
+    #[serde(default = "default_true")]
+    pub skip_meaningless: bool,
+    /// 低于该置信度时跳过的判断不生效（宁可回复也不误伤）
+    #[serde(default = "default_guard_confidence")]
+    pub min_confidence: f64,
+    /// 置信度不足时追加一次复核调用
+    #[serde(default = "default_true")]
+    pub review_low_confidence: bool,
+    /// 是否把跳过的评论写入数据库，避免下一轮重复调用 AI
+    #[serde(default = "default_true")]
+    pub store_skips: bool,
+}
+
+impl Default for AiGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            skip_spam: true,
+            skip_toxic: true,
+            skip_sensitive: true,
+            skip_meaningless: true,
+            min_confidence: default_guard_confidence(),
+            review_low_confidence: true,
+            store_skips: true,
         }
     }
 }
@@ -242,6 +342,15 @@ pub struct ReplyConfig {
     pub like_enabled: bool,
     #[serde(default)]
     pub context_comments_count: u32,
+    /// 楼中楼上下文最多向上追溯多少层（0=不附带父评论链）
+    #[serde(default = "default_thread_context_max")]
+    pub thread_context_max: u32,
+    /// 从历史回复里取多少条作为风格示例（0=关闭）
+    #[serde(default = "default_style_examples")]
+    pub style_examples_count: u32,
+    /// 新回复与近期回复的相似度阈值，超过则重写一次；0=关闭去重
+    #[serde(default = "default_dedupe_threshold")]
+    pub dedupe_threshold: f64,
     #[serde(default)]
     pub only_bvid: String,
     #[serde(default)]
@@ -255,6 +364,8 @@ pub struct ReplyConfig {
     /// 预览模式：走完整流程生成AI回复并记录日志，但不实际发表、不存历史
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub ai_guard: AiGuardConfig,
     #[serde(default)]
     pub keyword_filter: KeywordFilterConfig,
     #[serde(default)]
@@ -273,12 +384,16 @@ impl Default for ReplyConfig {
             reply_delay: default_reply_delay(),
             like_enabled: false,
             context_comments_count: 0,
+            thread_context_max: default_thread_context_max(),
+            style_examples_count: default_style_examples(),
+            dedupe_threshold: default_dedupe_threshold(),
             only_bvid: String::new(),
             like_user_video_enabled: false,
             like_user_video_only_followers: false,
             chained_reply_enabled: true,
             max_reply_depth: default_max_reply_depth(),
             dry_run: false,
+            ai_guard: AiGuardConfig::default(),
             keyword_filter: KeywordFilterConfig::default(),
             length_filter: LengthFilterConfig::default(),
             user_filter: UserFilterConfig::default(),
@@ -322,13 +437,76 @@ pub enum AiProvider {
     #[default]
     Deepseek,
     Ollama,
+    /// 任意 OpenAI 兼容端点（OpenAI / OpenRouter / SiliconFlow / LM Studio / vLLM 等）
+    Openai,
 }
 
+impl AiProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            AiProvider::Deepseek => "DeepSeek",
+            AiProvider::Ollama => "Ollama",
+            AiProvider::Openai => "OpenAI 兼容",
+        }
+    }
+}
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// 主 provider 失败后的备用 provider
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AiFallback {
+    #[default]
+    None,
+    Deepseek,
+    Ollama,
+    Openai,
+}
+
+impl AiFallback {
+    pub fn as_provider(self) -> Option<AiProvider> {
+        match self {
+            AiFallback::None => None,
+            AiFallback::Deepseek => Some(AiProvider::Deepseek),
+            AiFallback::Ollama => Some(AiProvider::Ollama),
+            AiFallback::Openai => Some(AiProvider::Openai),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
     pub provider: AiProvider,
+    /// 主 provider 请求失败（重试后仍失败）时尝试的备用 provider。
+    /// `none` 表示不启用回退。
+    #[serde(default)]
+    pub fallback: AiFallback,
+    /// DeepSeek / OpenAI 兼容端点的单次请求超时（秒）；Ollama 仍使用自己的
+    /// `[ollama] timeout_secs`（本地模型通常更慢）。
+    #[serde(default = "default_ai_request_timeout")]
+    pub request_timeout_secs: u64,
+    /// 每日 token 预算（输入 + 输出，0=不限制）。超限后当天不再调用 AI。
+    #[serde(default)]
+    pub daily_token_budget: u64,
+    /// 输入 token 单价（元 / 百万 token，0=不估算费用）
+    #[serde(default)]
+    pub input_price_per_million: f64,
+    /// 输出 token 单价（元 / 百万 token，0=不估算费用）
+    #[serde(default)]
+    pub output_price_per_million: f64,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: AiProvider::Deepseek,
+            fallback: AiFallback::None,
+            request_timeout_secs: default_ai_request_timeout(),
+            daily_token_budget: 0,
+            input_price_per_million: 0.0,
+            output_price_per_million: 0.0,
+        }
+    }
 }
 
 /// 关闭主窗口时的行为
@@ -371,6 +549,38 @@ impl Default for AppUiConfig {
     }
 }
 
+impl RawConfig {
+    /// 指定的 provider 是否已经配置到「可以发起请求」的程度。
+    ///
+    /// DeepSeek 必须有 API Key；Ollama / OpenAI 兼容端点允许无 Key（本地服务），
+    /// 但必须有地址与模型名。
+    pub fn ai_provider_configured(&self, provider: AiProvider) -> bool {
+        match provider {
+            AiProvider::Deepseek => !self.deepseek.api_key.trim().is_empty(),
+            AiProvider::Ollama => {
+                !self.ollama.base_url.trim().is_empty() && !self.ollama.model.trim().is_empty()
+            }
+            AiProvider::Openai => {
+                !self.openai.base_url.trim().is_empty() && !self.openai.model.trim().is_empty()
+            }
+        }
+    }
+
+    /// 当前选中的 provider 是否已配置完整
+    pub fn is_ai_configured(&self) -> bool {
+        self.ai_provider_configured(self.ai.provider)
+    }
+
+    /// 某个 provider 当前使用的模型名（用于日志 / 用量统计）
+    pub fn ai_model(&self, provider: AiProvider) -> String {
+        match provider {
+            AiProvider::Deepseek => self.deepseek.model.clone(),
+            AiProvider::Ollama => self.ollama.model.clone(),
+            AiProvider::Openai => self.openai.model.clone(),
+        }
+    }
+}
+
 impl AppUiConfig {
     /// 解析 close_action，非法值按 ask 处理（兼容手改配置文件）
     pub fn close_action_kind(&self) -> CloseAction {
@@ -397,6 +607,9 @@ pub struct RawConfig {
     pub deepseek: DeepseekConfig,
     #[serde(default)]
     pub ollama: OllamaConfig,
+    /// OpenAI 兼容端点（新增 section，旧配置没有时使用默认值）
+    #[serde(default)]
+    pub openai: OpenAiConfig,
     #[serde(default)]
     pub reply: ReplyConfig,
     #[serde(default)]
@@ -446,11 +659,19 @@ fn default_temperature() -> f64 { 0.7 }
 /// 默认关闭思考模式：评论回复要的是快、短、可复现，且 temperature 要能生效
 fn default_thinking() -> bool { false }
 fn default_system_prompt() -> String {
-    "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。".into()
+    DEFAULT_SYSTEM_PROMPT.into()
 }
 fn default_ollama_base_url() -> String { "http://127.0.0.1:11434".into() }
 fn default_ollama_model() -> String { "qwen2.5:7b".into() }
 fn default_ollama_timeout() -> u64 { 60 }
+fn default_ollama_num_ctx() -> u32 { 8192 }
+fn default_openai_base_url() -> String { "https://api.openai.com/v1".into() }
+fn default_openai_token_param() -> String { "max_tokens".into() }
+fn default_ai_request_timeout() -> u64 { 45 }
+fn default_guard_confidence() -> f64 { 0.6 }
+fn default_thread_context_max() -> u32 { 6 }
+fn default_style_examples() -> u32 { 2 }
+fn default_dedupe_threshold() -> f64 { 0.82 }
 fn default_max_process() -> u32 { 10 }
 fn default_reply_delay() -> u64 { 2 }
 fn default_max_reply_depth() -> u32 { 3 }
@@ -723,6 +944,70 @@ prefix = "hi"
 
         let reparsed: RawConfig = toml::from_str(&written).unwrap();
         assert!(reparsed.extra.contains_key("my_custom_section"));
+    }
+
+    /// 新增 AI 配置的默认值必须是「可直接跑」的保守配置
+    #[test]
+    fn test_ai_defaults() {
+        let cfg = RawConfig::default();
+        assert_eq!(cfg.ai.provider, AiProvider::Deepseek);
+        assert_eq!(cfg.ai.fallback, AiFallback::None);
+        assert_eq!(cfg.ai.request_timeout_secs, 45);
+        assert_eq!(cfg.ai.daily_token_budget, 0);
+        assert_eq!(cfg.ollama.num_ctx, 8192);
+        assert_eq!(cfg.openai.base_url, "https://api.openai.com/v1");
+        assert_eq!(cfg.openai.token_param, "max_tokens");
+        assert!(cfg.openai.json_mode);
+        assert_eq!(cfg.reply.thread_context_max, 6);
+        assert_eq!(cfg.reply.style_examples_count, 2);
+        assert!((cfg.reply.dedupe_threshold - 0.82).abs() < f64::EPSILON);
+        assert!(cfg.reply.ai_guard.enabled, "安全门默认开启");
+        assert!((cfg.reply.ai_guard.min_confidence - 0.6).abs() < f64::EPSILON);
+    }
+
+    /// 旧配置没有 [ai] / [openai] / [reply.ai_guard] 时必须能用默认值解析
+    #[test]
+    fn test_legacy_config_without_new_ai_sections() {
+        let legacy = "[deepseek]\napi_key = \"sk-x\"\n\n[reply]\nprefix = \"hi\"\n";
+        let parsed: RawConfig = toml::from_str(legacy).unwrap();
+        assert_eq!(parsed.ai.provider, AiProvider::Deepseek);
+        assert_eq!(parsed.ai.fallback, AiFallback::None);
+        assert_eq!(parsed.ai.request_timeout_secs, 45);
+        assert!(parsed.reply.ai_guard.enabled);
+        assert_eq!(parsed.reply.prefix, "hi");
+        assert!(parsed.is_ai_configured());
+    }
+
+    /// OpenAI 兼容 provider 的往返序列化与「是否已配置」判断
+    #[test]
+    fn test_openai_provider_roundtrip_and_readiness() {
+        let mut cfg = RawConfig::default();
+        cfg.ai.provider = AiProvider::Openai;
+        cfg.ai.fallback = AiFallback::Ollama;
+        cfg.openai.model = "test-model".into();
+
+        assert!(cfg.is_ai_configured(), "有地址与模型名即可用（本地服务可无 Key）");
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        assert!(toml_str.contains("[openai]"));
+        assert!(toml_str.contains("test-model"));
+
+        let parsed: RawConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.ai.provider, AiProvider::Openai);
+        assert_eq!(parsed.ai.fallback, AiFallback::Ollama);
+        assert_eq!(parsed.openai.model, "test-model");
+
+        cfg.openai.model.clear();
+        assert!(!cfg.is_ai_configured());
+    }
+
+    /// 示例配置必须始终能被当前版本解析，避免文档与代码漂移
+    #[test]
+    fn test_example_config_parses() {
+        let raw = include_str!("../config.example.toml");
+        let parsed: RawConfig = toml::from_str(raw).expect("config.example.toml 应能解析");
+        assert_eq!(parsed.ai.provider, AiProvider::Deepseek);
+        assert!(parsed.reply.ai_guard.enabled);
+        assert_eq!(parsed.openai.token_param, "max_tokens");
     }
 
     /// 未知的顶层标量字段也要保留

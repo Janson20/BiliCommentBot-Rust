@@ -194,6 +194,9 @@
   let ollamaChecking = false;
   let ollamaAvailable = false;
   let ollamaModels = [];
+  let openaiBaseUrl = "https://api.openai.com/v1";
+  let openaiApiKey = "";
+  let openaiModel = "";
 
   async function detectOllama() {
     ollamaChecking = true;
@@ -218,10 +221,15 @@
         cfg.deepseek = cfg.deepseek || {};
         cfg.deepseek.api_key = deepseekApiKey;
         cfg.deepseek.model = deepseekModel || "deepseek-flash";
-      } else {
+      } else if (aiProvider === "ollama") {
         cfg.ollama = cfg.ollama || {};
         cfg.ollama.base_url = ollamaBaseUrl;
         cfg.ollama.model = ollamaModel || "qwen2.5:7b";
+      } else {
+        cfg.openai = cfg.openai || {};
+        cfg.openai.base_url = openaiBaseUrl;
+        cfg.openai.api_key = openaiApiKey;
+        cfg.openai.model = openaiModel;
       }
       await saveConfig(cfg);
       cfgStore.set(cfg);
@@ -303,6 +311,9 @@
         }
         if (aiProvider === "ollama" && !ollamaAvailable) {
           showToast("error", "请先检测 Ollama 服务是否可用"); return;
+        }
+        if (aiProvider === "openai" && (!openaiBaseUrl.trim() || !openaiModel.trim())) {
+          showToast("error", "请填写 OpenAI 兼容端点的地址与模型名"); return;
         }
         // 保存失败就停在当前步，否则完成页会谎报「已配置」
         if (!(await saveAiConfig())) return;
@@ -516,6 +527,9 @@
         <button class="ai-tab" class:active={aiProvider === "ollama"} on:click={() => (aiProvider = "ollama")}>
           <span class="ai-icon">🦙</span> Ollama（本地）
         </button>
+        <button class="ai-tab" class:active={aiProvider === "openai"} on:click={() => (aiProvider = "openai")}>
+          OpenAI 兼容
+        </button>
       </div>
 
       {#if aiProvider === "deepseek"}
@@ -530,7 +544,7 @@
             <input id="wizard-ds-model" type="text" bind:value={deepseekModel} placeholder="deepseek-flash" />
           </div>
         </div>
-      {:else}
+      {:else if aiProvider === "ollama"}
         <div class="ai-config">
           <p class="hint">需要先安装 <a href="https://ollama.com" on:click|preventDefault={() => openExternal("https://ollama.com")}>Ollama</a> 并拉取模型</p>
           <div class="field">
@@ -564,6 +578,22 @@
             {:else if !ollamaChecking && ollamaAvailable === false}
               <span class="status-err">❌ 不可用，请确认 Ollama 已启动</span>
             {/if}
+          </div>
+        </div>
+      {:else}
+        <div class="ai-config">
+          <p class="hint">支持 OpenAI、OpenRouter、SiliconFlow、LM Studio、vLLM 等标准端点。</p>
+          <div class="field">
+            <label for="wizard-openai-url">API 地址</label>
+            <input id="wizard-openai-url" type="text" bind:value={openaiBaseUrl} placeholder="https://api.openai.com/v1" />
+          </div>
+          <div class="field">
+            <label for="wizard-openai-key">API Key <span class="field-hint">（本地服务可留空）</span></label>
+            <input id="wizard-openai-key" type="password" bind:value={openaiApiKey} placeholder="sk-..." />
+          </div>
+          <div class="field">
+            <label for="wizard-openai-model">模型名</label>
+            <input id="wizard-openai-model" type="text" bind:value={openaiModel} placeholder="gpt-4o-mini / qwen3 / glm-4.6" />
           </div>
         </div>
       {/if}
@@ -651,7 +681,7 @@
         <h3>配置摘要</h3>
         <div class="summary-row"><span>B 站登录</span><span class="val-ok">✅ 已登录</span></div>
         {#if mode === "fresh"}
-          <div class="summary-row"><span>AI 引擎</span><span>{aiProvider === "deepseek" ? "DeepSeek（云端）" : "Ollama（本地）"}</span></div>
+          <div class="summary-row"><span>AI 引擎</span><span>{aiProvider === "deepseek" ? "DeepSeek（云端）" : aiProvider === "ollama" ? "Ollama（本地）" : "OpenAI 兼容端点"}</span></div>
           <div class="summary-row"><span>自动回复</span><span>{replyEnabled ? "✅ 启用" : "⛔ 关闭"}</span></div>
           <div class="summary-row"><span>密码保护</span><span>{pwdSavedValue ? "🔒 已设置" : "— 未设置"}</span></div>
         {/if}
@@ -660,7 +690,7 @@
         {/if}
       </div>
 
-      <p class="next-hint">提示：启动前可在「配置」页面查看和调整全部设置，在「设置」页面可设置密码和检测 Ollama。</p>
+      <p class="next-hint">提示：启动前可在「配置」页面查看和调整全部设置（含 AI 安全门与用量预算），在「设置」页面可设置密码和检测 Ollama。</p>
       <button class="btn-primary btn-large" on:click={doneWizard}>🚀 开始使用</button>
     </div>
   {/if}

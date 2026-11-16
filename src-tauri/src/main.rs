@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod app_sign;
 mod autostart;
 mod bot;
@@ -15,7 +16,9 @@ mod history;
 mod http_client;
 mod logger;
 mod ollama;
+mod openai;
 mod paths;
+mod prompt;
 mod rate_limiter;
 mod reply;
 mod single_instance;
@@ -27,7 +30,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tauri::Manager;
 
 use crate::bot::{BotEvent, BotState};
-use crate::config::{AiProvider, AppConfig, LoggingConfig, RawConfig};
+use crate::config::{AppConfig, LoggingConfig, RawConfig};
 use crate::cookie::CookieManager;
 use crate::history::HistoryManager;
 use crate::rate_limiter::RateLimiter;
@@ -56,14 +59,7 @@ fn config_is_runnable(cfg: &RawConfig) -> bool {
         || !cfg.bilibili.uid.trim().is_empty()
         || paths::cookie_file().exists();
 
-    let ai_ready = match cfg.ai.provider {
-        AiProvider::Deepseek => !cfg.deepseek.api_key.trim().is_empty(),
-        AiProvider::Ollama => {
-            !cfg.ollama.base_url.trim().is_empty() && !cfg.ollama.model.trim().is_empty()
-        }
-    };
-
-    logged_in && ai_ready
+    logged_in && cfg.is_ai_configured()
 }
 
 fn main() {
@@ -169,6 +165,7 @@ fn main() {
                 rate_limiter,
                 history_available,
                 last_cookie_check: Mutex::new(None),
+                ai_budget_alert_day: Mutex::new(None),
             });
 
             // 后台任务：广播 BotEvent 到 Tauri 窗口
@@ -255,6 +252,11 @@ fn main() {
             commands::clear_history,
             commands::check_ollama_availability,
             commands::list_ollama_models,
+            commands::test_ai_connection,
+            commands::list_ai_models,
+            commands::get_ai_stats,
+            commands::get_ignored_comments,
+            commands::clear_ignored_comments,
             commands::set_password,
             commands::verify_password,
             commands::clear_all_data,

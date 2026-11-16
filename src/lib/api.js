@@ -31,6 +31,14 @@ export const clearHistory = () => invoke("clear_history");
 export const checkOllama = () => invoke("check_ollama_availability");
 export const listOllamaModels = () => invoke("list_ollama_models");
 
+// ── AI 连接 / 模型 / 用量 ──
+export const testAiConnection = (provider) => invoke("test_ai_connection", { provider });
+export const listAiModels = (provider) => invoke("list_ai_models", { provider });
+export const getAiStats = () => invoke("get_ai_stats");
+export const getIgnoredComments = (limit = 100) =>
+  invoke("get_ignored_comments", { limit });
+export const clearIgnoredComments = () => invoke("clear_ignored_comments");
+
 // ── 密码 ──
 export const setPassword = (pwd) => invoke("set_password", { password: pwd });
 export const verifyPassword = (input) =>

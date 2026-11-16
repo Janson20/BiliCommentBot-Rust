@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
+use chrono::TimeZone;
+
 use crate::bot::{self, BotEvent, BotState};
-use crate::config::AppConfig;
+use crate::config::{AiProvider, AppConfig};
 use crate::cookie::{CookieVerifyResult, QrGenerateResult};
 use crate::history::HistoryEntry;
 use crate::paths;
@@ -627,6 +629,182 @@ pub async fn list_ollama_models(
     crate::ollama::list_models(&config.ollama.base_url)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AI 连接测试 / 模型列表 / 用量统计
+// ════════════════════════════════════════════════════════════════
+
+fn parse_ai_provider(raw: Option<&str>, fallback: AiProvider) -> Result<AiProvider, String> {
+    let value = raw.unwrap_or("").trim().to_ascii_lowercase();
+    match value.as_str() {
+        "" => Ok(fallback),
+        "deepseek" => Ok(AiProvider::Deepseek),
+        "ollama" => Ok(AiProvider::Ollama),
+        "openai" | "openai_compatible" | "compatible" => Ok(AiProvider::Openai),
+        other => Err(format!("未知的 AI provider: {}", other)),
+    }
+}
+
+#[tauri::command]
+pub async fn test_ai_connection(
+    bot_state: State<'_, Arc<BotState>>,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let config = bot_state.config.read().await.clone();
+    let selected = parse_ai_provider(provider.as_deref(), config.ai.provider)?;
+    if !config.ai_provider_configured(selected) {
+        return Err(format!(
+            "{} 尚未配置完整，请检查 API Key / 服务地址 / 模型名",
+            selected.label()
+        ));
+    }
+
+    let policy = bot_state.rate_limiter.retry_policy();
+    let timeout_secs = match selected {
+        AiProvider::Ollama => config.ollama.timeout_secs.max(1) + 5,
+        _ => config.ai.request_timeout_secs.max(1) + 5,
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let result = crate::ai::test_connection(&client, &config, selected, policy)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "provider": result.provider,
+        "model": result.model,
+        "latency_ms": result.latency_ms,
+        "reply": result.reply,
+    }))
+}
+
+#[tauri::command]
+pub async fn list_ai_models(
+    bot_state: State<'_, Arc<BotState>>,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let config = bot_state.config.read().await.clone();
+    let selected = parse_ai_provider(provider.as_deref(), config.ai.provider)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let models = crate::ai::list_models(&client, &config, selected)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "provider": selected.label(),
+        "models": models,
+    }))
+}
+
+fn estimate_cost(
+    summary: &crate::history::AiUsageSummary,
+    input_price: f64,
+    output_price: f64,
+) -> f64 {
+    summary.prompt_tokens as f64 / 1_000_000.0 * input_price
+        + summary.completion_tokens as f64 / 1_000_000.0 * output_price
+}
+
+#[tauri::command]
+pub async fn get_ai_stats(
+    bot_state: State<'_, Arc<BotState>>,
+) -> Result<serde_json::Value, String> {
+    let config = bot_state.config.read().await.clone();
+    let history = bot_state.history.lock().await;
+    let today = history.ai_usage_today();
+    let days = history.ai_usage_recent(7);
+
+    let input_price = config.ai.input_price_per_million;
+    let output_price = config.ai.output_price_per_million;
+    let used = today.total_tokens();
+    let budget = config.ai.daily_token_budget;
+
+    let day_items: Vec<serde_json::Value> = days
+        .iter()
+        .map(|(day, summary)| {
+            serde_json::json!({
+                "day": day,
+                "requests": summary.requests,
+                "prompt_tokens": summary.prompt_tokens,
+                "completion_tokens": summary.completion_tokens,
+                "total_tokens": summary.total_tokens(),
+                "failures": summary.failures,
+                "skips": summary.skips,
+                "estimated_cost": estimate_cost(summary, input_price, output_price),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "today": {
+            "requests": today.requests,
+            "prompt_tokens": today.prompt_tokens,
+            "completion_tokens": today.completion_tokens,
+            "total_tokens": used,
+            "failures": today.failures,
+            "skips": today.skips,
+            "estimated_cost": estimate_cost(&today, input_price, output_price),
+        },
+        "budget": {
+            "daily_tokens": budget,
+            "used_tokens": used,
+            "remaining_tokens": if budget == 0 { 0 } else { budget.saturating_sub(used) },
+            "exhausted": budget > 0 && used >= budget,
+        },
+        "days": day_items,
+        "prices": {
+            "input_per_million": input_price,
+            "output_per_million": output_price,
+        },
+    }))
+}
+
+#[tauri::command]
+pub async fn get_ignored_comments(
+    bot_state: State<'_, Arc<BotState>>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let history = bot_state.history.lock().await;
+    let rows = history.query_ignored(limit.unwrap_or(100));
+    let items: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            let created_at_text = chrono::Local
+                .timestamp_opt(row.created_at, 0)
+                .single()
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_default();
+            serde_json::json!({
+                "comment_id": row.comment_id,
+                "bvid": row.bvid,
+                "user": row.user,
+                "content": row.content,
+                "reason": row.reason,
+                "risk": row.risk,
+                "created_at": row.created_at,
+                "created_at_text": created_at_text,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
+#[tauri::command]
+pub async fn clear_ignored_comments(
+    bot_state: State<'_, Arc<BotState>>,
+) -> Result<(), String> {
+    let history = bot_state.history.lock().await;
+    history.clear_ignored();
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════

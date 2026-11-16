@@ -5,6 +5,33 @@
 
 ## Unreleased
 
+### AI 能力升级（2026-11）
+
+- 新增 OpenAI 兼容 provider（`[ai] provider = "openai"` + `[openai]` 段），支持
+  OpenAI / OpenRouter / SiliconFlow / LM Studio / vLLM 等标准 `/chat/completions` 端点。
+  支持 `max_tokens` 与 `max_completion_tokens` 字段切换、`reasoning_effort`、JSON 模式开关；
+  本地服务可留空 API Key。配置页新增「保存并测试连接」与「获取模型列表」。
+- 新增 `[ai] fallback`：主 provider 按 `[rate_limit]` 重试后仍失败时回退到备用 provider 一次，
+  日志与界面标明本次是否走了回退。
+- 新增 AI 安全门（`[reply.ai_guard]`，默认开启）：单次调用返回
+  `{action, reason, risk, confidence, reply}`，广告/引战/敏感/无意义评论跳过；
+  低于 `min_confidence` 的判断不生效，可追加一次复核。跳过记录写入
+  `ignored_comments` 表，下一轮不再调用 AI。
+- 新增提示注入防护：不可信文本用边界标签包裹并清洗 HTML/XML 标签与控制字符，
+  系统提示词声明其不可执行；评论正文截断到 2000 字符。
+- 上下文升级：楼中楼按根评论到父评论的链路传入；历史回复作为风格示例；
+  新回复与近期回复的字符二元组相似度超过 `dedupe_threshold` 时重写一次。
+  新增 `thread_context_max` / `style_examples_count` / `dedupe_threshold`。
+- 新增 AI 用量统计：解析 DeepSeek / OpenAI / Ollama 的 token 用量，落库到
+  `ai_usage_daily`；仪表盘显示今日调用量、token、跳过数、失败数与估算费用；
+  `[ai] daily_token_budget` 超限后当天暂停 AI 并推送提醒。
+- 配置页补齐 Ollama 的 `system_prompt` / `max_tokens` / `temperature` 输入项。
+- Ollama 新增 `num_ctx`（默认 8192）：提示词包含楼中楼、风格示例与评论，默认 2048 的
+  上下文窗口容易被截断；本地显存不足时可以调小。
+- 旧配置无需修改：新字段均有默认值，缺失时按默认值解析；未知字段仍原样保留。
+- 新增单元测试覆盖提示词注入清洗、JSON 决策解析、相似度、配置兼容、跳过记录与
+  AI 用量汇总；单元测试由 84 个增加到 118 个。
+
 ### 适配 DeepSeek API 更新
 
 - 默认模型由 `deepseek-v4-flash` 改为 `deepseek-flash`：官方 2026-09-10 上线 V4.1 Flash 后，

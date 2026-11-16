@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::comment_fetcher::Comment;
+
 // ──────────────────────────────────────────────────────────────────
 //  数据模型
 // ──────────────────────────────────────────────────────────────────
@@ -36,6 +38,34 @@ pub struct HistoryEntry {
     pub depth: u32,
 }
 
+/// AI 安全门跳过的一条评论（落库用于跨轮去重，避免反复调用 AI）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IgnoredComment {
+    pub comment_id: String,
+    pub bvid: String,
+    pub user: String,
+    pub content: String,
+    pub reason: String,
+    pub risk: String,
+    pub created_at: i64,
+}
+
+/// 某个时间窗口内的 AI 用量汇总
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AiUsageSummary {
+    pub requests: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub failures: u64,
+    pub skips: u64,
+}
+
+impl AiUsageSummary {
+    pub fn total_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────
 //  HistoryManager
 // ──────────────────────────────────────────────────────────────────
@@ -61,6 +91,17 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
 
 const JSON_FILE: &str = "history.json";
 const JSON_BAK: &str = "history.json.bak";
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn today_local() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
 
 pub struct HistoryManager {
     conn: Mutex<Option<Connection>>,
@@ -132,7 +173,31 @@ impl HistoryManager {
             );
             CREATE INDEX IF NOT EXISTS idx_history_comment_id ON history(comment_id);
             CREATE INDEX IF NOT EXISTS idx_history_bvid ON history(bvid);
-            CREATE INDEX IF NOT EXISTS idx_history_time ON history(time);",
+            CREATE INDEX IF NOT EXISTS idx_history_time ON history(time);
+
+            CREATE TABLE IF NOT EXISTS ignored_comments (
+                comment_id  TEXT PRIMARY KEY,
+                bvid        TEXT NOT NULL DEFAULT '',
+                user        TEXT NOT NULL DEFAULT '',
+                content     TEXT NOT NULL DEFAULT '',
+                reason      TEXT NOT NULL DEFAULT '',
+                risk        TEXT NOT NULL DEFAULT '',
+                created_at  INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ignored_created ON ignored_comments(created_at);
+
+            CREATE TABLE IF NOT EXISTS ai_usage_daily (
+                day               TEXT NOT NULL,
+                provider          TEXT NOT NULL,
+                model             TEXT NOT NULL,
+                requests          INTEGER NOT NULL DEFAULT 0,
+                prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                failures          INTEGER NOT NULL DEFAULT 0,
+                skips             INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, provider, model)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_day ON ai_usage_daily(day);",
         )?;
 
         Ok(conn)
@@ -474,11 +539,249 @@ impl HistoryManager {
         })
     }
 
+    /// 最近成功发表的回复正文（风格示例 / 去重用，不含用户与视频信息）
+    pub fn recent_replies(&self, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let fetch = limit.saturating_mul(4).max(limit);
+        self.with_conn(Vec::new(), |conn| {
+            let mut stmt = match conn.prepare(
+                "SELECT reply_content FROM history
+                 WHERE reply_content <> ''
+                 ORDER BY reply_time DESC
+                 LIMIT ?1",
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("准备近期回复查询失败: {}", e);
+                    return Vec::new();
+                }
+            };
+            let rows = match stmt.query_map(params![fetch as i64], |row| row.get::<_, String>(0)) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log::error!("近期回复查询失败: {}", e);
+                    return Vec::new();
+                }
+            };
+            let mut seen = HashSet::new();
+            let mut out = Vec::new();
+            for row in rows.flatten() {
+                let text = row.trim().to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                if seen.insert(text.to_lowercase()) {
+                    out.push(text);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// 这条评论是否已被 AI 安全门跳过（数据库不可用时返回 false）
+    pub fn is_ignored(&self, comment_id: &str) -> bool {
+        self.with_conn(false, |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM ignored_comments WHERE comment_id = ?1",
+                params![comment_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false)
+        })
+    }
+
+    /// 记录一条被安全门跳过的评论，并顺带清理 90 天前的旧记录
+    pub fn add_ignored(&self, comment: &Comment, bvid: &str, reason: &str, risk: &str) {
+        let now = unix_now();
+        let content: String = comment.content.chars().take(300).collect();
+        self.with_conn((), |conn| {
+            if let Err(e) = conn.execute(
+                "INSERT OR REPLACE INTO ignored_comments
+                 (comment_id, bvid, user, content, reason, risk, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    &comment.comment_id,
+                    bvid,
+                    &comment.user,
+                    content,
+                    reason,
+                    risk,
+                    now
+                ],
+            ) {
+                log::warn!("写入跳过记录失败 ({}): {}", comment.comment_id, e);
+            }
+            conn.execute(
+                "DELETE FROM ignored_comments WHERE created_at < ?1",
+                params![now - 90 * 24 * 3600],
+            )
+            .ok();
+        });
+    }
+
+    /// 最近的跳过记录（用于历史页展示）
+    pub fn query_ignored(&self, limit: u32) -> Vec<IgnoredComment> {
+        let limit = limit.clamp(1, 500) as i64;
+        self.with_conn(Vec::new(), |conn| {
+            let mut stmt = match conn.prepare(
+                "SELECT comment_id, bvid, user, content, reason, risk, created_at
+                 FROM ignored_comments
+                 ORDER BY created_at DESC
+                 LIMIT ?1",
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("准备跳过记录查询失败: {}", e);
+                    return Vec::new();
+                }
+            };
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(IgnoredComment {
+                    comment_id: row.get(0)?,
+                    bvid: row.get(1)?,
+                    user: row.get(2)?,
+                    content: row.get(3)?,
+                    reason: row.get(4)?,
+                    risk: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            });
+            match rows {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(e) => {
+                    log::error!("跳过记录查询失败: {}", e);
+                    Vec::new()
+                }
+            }
+        })
+    }
+
+    /// 记录一次 AI 调用（成功 / 失败 / 跳过均计入）
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_ai_usage(
+        &self,
+        provider: &str,
+        model: &str,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        success: bool,
+        skipped: bool,
+    ) {
+        let day = today_local();
+        self.with_conn((), |conn| {
+            let result = conn.execute(
+                "INSERT INTO ai_usage_daily
+                 (day, provider, model, requests, prompt_tokens, completion_tokens, failures, skips)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(day, provider, model) DO UPDATE SET
+                   requests = requests + excluded.requests,
+                   prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                   completion_tokens = completion_tokens + excluded.completion_tokens,
+                   failures = failures + excluded.failures,
+                   skips = skips + excluded.skips",
+                params![
+                    day,
+                    provider,
+                    model,
+                    if success { 1i64 } else { 0i64 },
+                    prompt_tokens as i64,
+                    completion_tokens as i64,
+                    if success { 0i64 } else { 1i64 },
+                    if skipped { 1i64 } else { 0i64 },
+                ],
+            );
+            if let Err(e) = result {
+                log::warn!("写入 AI 用量失败: {}", e);
+            }
+        });
+    }
+
+    /// 今日 AI 用量
+    pub fn ai_usage_today(&self) -> AiUsageSummary {
+        let day = today_local();
+        self.with_conn(AiUsageSummary::default(), |conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(requests),0), COALESCE(SUM(prompt_tokens),0),
+                        COALESCE(SUM(completion_tokens),0), COALESCE(SUM(failures),0),
+                        COALESCE(SUM(skips),0)
+                 FROM ai_usage_daily WHERE day = ?1",
+                params![day],
+                |row| {
+                    Ok(AiUsageSummary {
+                        requests: row.get::<_, i64>(0)?.max(0) as u64,
+                        prompt_tokens: row.get::<_, i64>(1)?.max(0) as u64,
+                        completion_tokens: row.get::<_, i64>(2)?.max(0) as u64,
+                        failures: row.get::<_, i64>(3)?.max(0) as u64,
+                        skips: row.get::<_, i64>(4)?.max(0) as u64,
+                    })
+                },
+            )
+            .unwrap_or_default()
+        })
+    }
+
+    /// 最近 N 天的 AI 用量（最新在前）
+    pub fn ai_usage_recent(&self, days: u32) -> Vec<(String, AiUsageSummary)> {
+        let days = days.clamp(1, 90) as i64;
+        self.with_conn(Vec::new(), |conn| {
+            let mut stmt = match conn.prepare(
+                "SELECT day,
+                        COALESCE(SUM(requests),0), COALESCE(SUM(prompt_tokens),0),
+                        COALESCE(SUM(completion_tokens),0), COALESCE(SUM(failures),0),
+                        COALESCE(SUM(skips),0)
+                 FROM ai_usage_daily
+                 GROUP BY day
+                 ORDER BY day DESC
+                 LIMIT ?1",
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("准备 AI 用量查询失败: {}", e);
+                    return Vec::new();
+                }
+            };
+            let rows = stmt.query_map(params![days], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    AiUsageSummary {
+                        requests: row.get::<_, i64>(1)?.max(0) as u64,
+                        prompt_tokens: row.get::<_, i64>(2)?.max(0) as u64,
+                        completion_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+                        failures: row.get::<_, i64>(4)?.max(0) as u64,
+                        skips: row.get::<_, i64>(5)?.max(0) as u64,
+                    },
+                ))
+            });
+            match rows {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(e) => {
+                    log::error!("AI 用量查询失败: {}", e);
+                    Vec::new()
+                }
+            }
+        })
+    }
+
+    pub fn clear_ignored(&self) {
+        self.with_conn((), |conn| {
+            conn.execute("DELETE FROM ignored_comments", []).ok();
+        });
+    }
+
     // ── Delete ──
 
     pub fn clear(&self) {
         self.with_conn((), |conn| {
             conn.execute("DELETE FROM history", []).ok();
+            // 跳过记录与回复历史同属"用户可见的评论记录"，一并清掉；
+            // AI 用量统计保留，便于继续观察费用趋势。
+            conn.execute("DELETE FROM ignored_comments", []).ok();
             // VACUUM to reclaim disk space
             conn.execute("VACUUM", []).ok();
         });
@@ -565,6 +868,88 @@ mod tests {
         assert_eq!(groups[0].2.len(), 2);
         assert_eq!(groups[1].0, "BV_B");
         assert_eq!(groups[1].2.len(), 1);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    fn comment(id: &str, content: &str) -> Comment {
+        Comment {
+            comment_id: id.into(),
+            content: content.into(),
+            user: "小明".into(),
+            uid: "1".into(),
+            ctime: 0,
+            parent_id: None,
+            root_id: None,
+            depth: 0,
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn test_ignored_comments_roundtrip() {
+        let tmp = std::env::temp_dir().join("test_history_ignored.db");
+        let _ = std::fs::remove_file(&tmp);
+        let hm = HistoryManager::new(&tmp);
+
+        let c = comment("c-ignored", "加群领福利");
+        hm.add_ignored(&c, "BV001", "广告引流", "spam");
+        assert!(hm.is_ignored("c-ignored"));
+        assert!(!hm.is_ignored("c-other"));
+
+        let rows = hm.query_ignored(10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reason, "广告引流");
+        assert_eq!(rows[0].risk, "spam");
+        assert_eq!(rows[0].bvid, "BV001");
+
+        hm.clear_ignored();
+        assert!(!hm.is_ignored("c-ignored"));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_ai_usage_roundtrip() {
+        let tmp = std::env::temp_dir().join("test_history_ai_usage.db");
+        let _ = std::fs::remove_file(&tmp);
+        let hm = HistoryManager::new(&tmp);
+
+        hm.record_ai_usage("deepseek", "deepseek-flash", 100, 20, true, false);
+        hm.record_ai_usage("deepseek", "deepseek-flash", 50, 10, true, true);
+        hm.record_ai_usage("ollama", "qwen2.5:7b", 0, 0, false, false);
+
+        let today = hm.ai_usage_today();
+        assert_eq!(today.requests, 2, "失败调用不计入 requests");
+        assert_eq!(today.prompt_tokens, 150);
+        assert_eq!(today.completion_tokens, 30);
+        assert_eq!(today.failures, 1);
+        assert_eq!(today.skips, 1);
+        assert_eq!(today.total_tokens(), 180);
+
+        let recent = hm.ai_usage_recent(7);
+        assert_eq!(recent.len(), 1, "同一天应合并成一行");
+        assert_eq!(recent[0].1.requests, 2);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_recent_replies_dedup_and_limit() {
+        let tmp = std::env::temp_dir().join("test_history_recent_replies.db");
+        let _ = std::fs::remove_file(&tmp);
+        let hm = HistoryManager::new(&tmp);
+
+        hm.add("c1", "BV001", "", "", "", "", 0, "谢谢支持", None, None, 0);
+        hm.add("c2", "BV001", "", "", "", "", 0, "谢谢支持", None, None, 0);
+        hm.add("c3", "BV001", "", "", "", "", 0, "这个视频真不错", None, None, 0);
+        hm.add("c4", "BV001", "", "", "", "", 0, "", None, None, 0);
+
+        let replies = hm.recent_replies(5);
+        assert_eq!(replies.len(), 2, "重复文本与空回复应被过滤");
+        assert!(replies.contains(&"这个视频真不错".to_string()));
+        assert!(replies.iter().any(|r| r == "谢谢支持"));
+        assert_eq!(hm.recent_replies(0).len(), 0);
 
         let _ = std::fs::remove_file(&tmp);
     }

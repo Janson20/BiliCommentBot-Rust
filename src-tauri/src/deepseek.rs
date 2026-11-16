@@ -1,28 +1,28 @@
 /// DeepSeek API 客户端
 ///
-/// 对标 Python 版 generate_reply（DeepSeek 部分），包含**失败重试**：
-/// Python 会按 `rate_limit.max_retries` 做指数退避重试，早期 Rust 端口只请求一次，
-/// 一次瞬时 5xx / 网络抖动就等于永久丢掉一条回复。
+/// 只负责 DeepSeek 的 HTTP 细节；提示词构建、回退与安全门在 ai.rs，
+/// 请求重试沿用 rate_limiter::RetryPolicy。
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::comment_fetcher::Comment;
+use crate::ai::{ChatOptions, ChatResult, TokenUsage};
 use crate::config::DeepseekConfig;
+use crate::prompt::ChatMessage;
 use crate::rate_limiter::{self, RetryPolicy};
-
-#[derive(Debug, Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
 
 /// 思考模式开关。
 ///
-/// 官方参数（OpenAI 格式）为 `{"thinking": {"type": "enabled" | "disabled"}}`，
-/// 直接作为请求体的顶层字段发送。线上模型默认是 `enabled`，
-/// 所以这里**总是显式发送**，避免依赖服务端的默认值。
+/// 官方参数（OpenAI 格式）为 {"thinking": {"type": "enabled" | "disabled"}}，
+/// 直接作为请求体的顶层字段发送。线上模型默认是 enabled，
+/// 所以这里总是显式发送，避免依赖服务端的默认值。
 #[derive(Debug, Serialize)]
 struct ThinkingToggle {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonMode {
     #[serde(rename = "type")]
     kind: &'static str,
 }
@@ -34,11 +34,18 @@ struct ChatRequest {
     max_tokens: u32,
     temperature: f64,
     thinking: ThinkingToggle,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<JsonMode>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
+    #[serde(default)]
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<UsageRaw>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,15 +55,20 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct ChatMsgContent {
+    #[serde(default)]
     content: String,
 }
 
-/// 缺省系统提示词（配置留空时使用）
-pub const DEFAULT_SYSTEM_PROMPT: &str =
-    "你是一个友善的B站UP主，请对评论做出自然、友好的回复。回复要简洁明了，控制在100字以内。";
+#[derive(Debug, Deserialize)]
+struct UsageRaw {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+}
 
 /// 规范化 API Key：去除首尾空白，若缺少 sk- 前缀则自动补全
-fn normalize_api_key(raw: &str) -> String {
+pub fn normalize_api_key(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -68,56 +80,16 @@ fn normalize_api_key(raw: &str) -> String {
     }
 }
 
-/// 构造请求消息体（DeepSeek 与 Ollama 共用同一套提示词结构）
-pub fn build_messages(
-    system_prompt: &str,
-    comment_text: &str,
-    context: &[Comment],
-    video_title: Option<&str>,
-    video_desc: Option<&str>,
-) -> Vec<(String, String)> {
-    let system = if system_prompt.trim().is_empty() {
-        DEFAULT_SYSTEM_PROMPT.to_string()
-    } else {
-        system_prompt.to_string()
-    };
-
-    let mut messages = vec![("system".to_string(), system)];
-
-    // 视频上下文
-    let mut video_context = String::new();
-    if let Some(t) = video_title {
-        video_context.push_str(&format!("视频标题：{}\n", t));
-    }
-    if let Some(d) = video_desc {
-        if !d.is_empty() {
-            video_context.push_str(&format!("视频简介：{}\n", d));
-        }
-    }
-
-    // 评论上下文
-    if !context.is_empty() || !video_context.is_empty() {
-        let mut ctx_text = video_context;
-        if !context.is_empty() {
-            ctx_text.push_str("前面的评论上下文（已回复的历史评论，仅供参考，请勿回复这些历史评论）：\n");
-            for (i, c) in context.iter().enumerate() {
-                ctx_text.push_str(&format!("{}. {}: {}\n", i + 1, c.user, c.content));
-            }
-        }
-        messages.push(("user".to_string(), ctx_text.trim().to_string()));
-    }
-
-    messages.push(("user".to_string(), comment_text.to_string()));
-    messages
-}
-
-/// 组装请求体。抽成独立函数便于单测直接断言序列化结果。
-fn build_request(api_config: &DeepseekConfig, messages: Vec<ChatMessage>) -> ChatRequest {
+fn build_request(
+    api_config: &DeepseekConfig,
+    messages: &[ChatMessage],
+    options: ChatOptions,
+) -> ChatRequest {
     ChatRequest {
         model: api_config.model.clone(),
-        messages,
-        max_tokens: api_config.max_tokens,
-        temperature: api_config.temperature,
+        messages: messages.to_vec(),
+        max_tokens: options.max_tokens,
+        temperature: options.temperature,
         thinking: ThinkingToggle {
             kind: if api_config.thinking {
                 "enabled"
@@ -125,19 +97,20 @@ fn build_request(api_config: &DeepseekConfig, messages: Vec<ChatMessage>) -> Cha
                 "disabled"
             },
         },
+        response_format: options.json_mode.then_some(JsonMode {
+            kind: "json_object",
+        }),
     }
 }
 
-/// 使用 DeepSeek API 生成回复
-pub async fn generate_reply(
+/// 调用 DeepSeek 的 /chat/completions
+pub async fn chat(
     client: &reqwest::Client,
     api_config: &DeepseekConfig,
-    comment_text: &str,
-    context: &[Comment],
-    video_title: Option<&str>,
-    video_desc: Option<&str>,
+    messages: &[ChatMessage],
+    options: ChatOptions,
     policy: RetryPolicy,
-) -> Result<String> {
+) -> Result<ChatResult> {
     let api_key = normalize_api_key(&api_config.api_key);
     if api_key.is_empty() {
         return Err(anyhow::anyhow!(
@@ -145,33 +118,27 @@ pub async fn generate_reply(
         ));
     }
 
-    let messages = build_messages(
-        &api_config.system_prompt,
-        comment_text,
-        context,
-        video_title,
-        video_desc,
-    )
-    .into_iter()
-    .map(|(role, content)| ChatMessage { role, content })
-    .collect::<Vec<_>>();
-
-    let request_body = build_request(api_config, messages);
-
+    let request_body = build_request(api_config, messages, options);
     log::debug!(
-        "DeepSeek 请求: model={} max_tokens={} temp={} thinking={} msg_count={}",
+        "DeepSeek 请求: model={} max_tokens={} temp={} thinking={} json={} msg_count={}",
         api_config.model,
-        api_config.max_tokens,
-        api_config.temperature,
-        request_body.thinking.kind,
+        request_body.max_tokens,
+        request_body.temperature,
+        api_config.thinking,
+        options.json_mode,
         request_body.messages.len()
     );
     if api_config.thinking {
-        // 官方文档：思考模式下 temperature 不生效（不报错，但会被忽略）
-        log::debug!("思考模式已开启，temperature={} 将被服务端忽略", api_config.temperature);
+        log::debug!(
+            "思考模式已开启，temperature={} 将被服务端忽略",
+            api_config.temperature
+        );
     }
 
-    let url = format!("{}/chat/completions", api_config.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        api_config.base_url.trim_end_matches('/')
+    );
     let auth = format!("Bearer {}", api_key);
 
     let text = policy
@@ -180,7 +147,7 @@ pub async fn generate_reply(
                 .post(&url)
                 .header("Authorization", auth.clone())
                 .header("Content-Type", "application/json")
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(options.timeout_secs.max(1)))
                 .json(&request_body)
                 .send()
                 .await
@@ -218,19 +185,42 @@ pub async fn generate_reply(
         .await
         .context("DeepSeek API 请求失败")?;
 
-    let result: ChatResponse =
-        serde_json::from_str(&text).context("DeepSeek API 响应解析失败")?;
+    let result: ChatResponse = serde_json::from_str(&text).context("DeepSeek API 响应解析失败")?;
 
-    result
+    let content = result
         .choices
         .first()
         .map(|c| c.message.content.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("DeepSeek 返回空回复"))
+        .ok_or_else(|| anyhow::anyhow!("DeepSeek 返回空回复"))?;
+
+    let usage = result
+        .usage
+        .map(|u| TokenUsage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+        })
+        .unwrap_or_default();
+
+    Ok(ChatResult {
+        text: content,
+        usage,
+        model: result.model.unwrap_or_else(|| api_config.model.clone()),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DeepseekConfig;
+
+    fn opts() -> ChatOptions {
+        ChatOptions {
+            max_tokens: 800,
+            temperature: 0.7,
+            json_mode: false,
+            timeout_secs: 30,
+        }
+    }
 
     #[test]
     fn test_normalize_api_key() {
@@ -241,40 +231,7 @@ mod tests {
         assert_eq!(normalize_api_key("   "), "");
     }
 
-    #[test]
-    fn test_build_messages_uses_configured_system_prompt() {
-        let msgs = build_messages("你是一只猫", "你好", &[], None, None);
-        assert_eq!(msgs[0].0, "system");
-        assert_eq!(msgs[0].1, "你是一只猫");
-        assert_eq!(msgs.last().unwrap().1, "你好");
-    }
-
-    #[test]
-    fn test_build_messages_falls_back_to_default_prompt() {
-        let msgs = build_messages("   ", "你好", &[], None, None);
-        assert_eq!(msgs[0].1, DEFAULT_SYSTEM_PROMPT);
-    }
-
-    #[test]
-    fn test_build_messages_includes_video_and_context() {        let ctx = vec![Comment {
-            comment_id: "1".into(),
-            content: "旧评论".into(),
-            user: "小明".into(),
-            uid: "9".into(),
-            ctime: 0,
-            parent_id: None,
-            root_id: None,
-            depth: 0,
-            children: vec![],
-        }];
-        let msgs = build_messages("p", "新评论", &ctx, Some("标题"), Some("简介"));
-        assert_eq!(msgs.len(), 3, "system + 上下文 + 当前评论");
-        assert!(msgs[1].1.contains("标题"));
-        assert!(msgs[1].1.contains("简介"));
-        assert!(msgs[1].1.contains("小明: 旧评论"));
-    }
-
-    /// 请求体必须在默认情况下**显式关闭**思考模式。
+    /// 请求体必须在默认情况下显式关闭思考模式。
     ///
     /// 线上模型的默认值是开启（effort = high），若不显式声明就会退回到
     /// 思考模式：temperature 被忽略、思维链占用输出预算、回复变慢。
@@ -283,23 +240,26 @@ mod tests {
         let cfg = DeepseekConfig::default();
         assert!(!cfg.thinking, "默认应为关闭思考模式");
 
-        let body = build_request(&cfg, Vec::new());
+        let body = build_request(&cfg, &[], opts());
         let json = serde_json::to_string(&body).expect("应能序列化请求体");
         assert!(
             json.contains(r#""thinking":{"type":"disabled"}"#),
             "请求体应显式关闭思考模式: {}",
             json
         );
+        assert!(
+            !json.contains("response_format"),
+            "普通回复不应请求 JSON 模式"
+        );
     }
 
-    /// 打开开关后请求体应声明 enabled
     #[test]
     fn test_request_body_enables_thinking_when_configured() {
         let cfg = DeepseekConfig {
             thinking: true,
             ..Default::default()
         };
-        let body = build_request(&cfg, Vec::new());
+        let body = build_request(&cfg, &[], opts());
         let json = serde_json::to_string(&body).expect("应能序列化请求体");
         assert!(
             json.contains(r#""thinking":{"type":"enabled"}"#),
@@ -308,20 +268,14 @@ mod tests {
         );
     }
 
-    /// 请求体应带上模型名、max_tokens、temperature（与非思考模式配合生效）
     #[test]
-    fn test_request_body_carries_configured_values() {
-        let cfg = DeepseekConfig {
-            model: "deepseek-flash".into(),
-            max_tokens: 800,
-            temperature: 0.5,
-            ..Default::default()
-        };
-        let body = build_request(&cfg, Vec::new());
+    fn test_json_mode_sets_response_format() {
+        let cfg = DeepseekConfig::default();
+        let mut options = opts();
+        options.json_mode = true;
+        let body = build_request(&cfg, &[], options);
         let json = serde_json::to_string(&body).unwrap();
-        assert!(json.contains(r#""model":"deepseek-flash""#), "{}", json);
-        assert!(json.contains(r#""max_tokens":800"#), "{}", json);
-        assert!(json.contains(r#""temperature":0.5"#), "{}", json);
+        assert!(json.contains(r#""response_format":{"type":"json_object"}"#));
     }
 
     /// 旧配置没有 thinking 字段时，必须回落到「关闭」而不是退回服务端默认
@@ -334,50 +288,5 @@ mod tests {
         let w: Wrapper =
             toml::from_str("[deepseek]\napi_key = \"sk-x\"\nmodel = \"deepseek-flash\"\n").unwrap();
         assert!(!w.deepseek.thinking, "缺字段时应回落到关闭");
-    }
-
-    /// 显式写 true 时能正确解析
-    #[test]
-    fn test_explicit_thinking_true_is_parsed() {
-        #[derive(serde::Deserialize)]
-        struct Wrapper {
-            deepseek: DeepseekConfig,
-        }
-        let w: Wrapper =
-            toml::from_str("[deepseek]\napi_key = \"sk-x\"\nthinking = true\n").unwrap();
-        assert!(w.deepseek.thinking);
-    }
-
-    /// 真实 API 测试——需要有网络和有效 Key
-    /// 运行时设置环境变量 DEEPSEEK_API_KEY=sk-xxx
-    /// cargo test deepseek_generate -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn test_generate_reply_live() {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .expect("请设置环境变量 DEEPSEEK_API_KEY=sk-xxx");
-        let client = reqwest::Client::new();
-        let cfg = DeepseekConfig {
-            api_key,
-            ..Default::default()
-        };
-
-        let result = generate_reply(
-            &client,
-            &cfg,
-            "这个户型公摊好大啊，120平实际才90出头，还不如我家的老破小",
-            &[],
-            Some("看房日记：120平三房两卫实地测评"),
-            Some("今天带大家看一套120平米的三房两卫，实地测量套内面积只有90出头..."),
-            RetryPolicy::default(),
-        )
-        .await;
-
-        match &result {
-            Ok(reply) => println!("\n=== AI 回复 ===\n{}\n", reply),
-            Err(e) => eprintln!("\n=== 失败 ===\n{}\n", e),
-        }
-        assert!(result.is_ok(), "DeepSeek API 调用失败");
-        assert!(!result.unwrap().is_empty(), "回复不应为空");
     }
 }

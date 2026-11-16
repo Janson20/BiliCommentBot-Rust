@@ -1,44 +1,46 @@
 /// Ollama API 客户端（本地 LLM）
 ///
-/// 调用本地 Ollama 服务的 /api/chat 端点。
-///
-/// 与 DeepSeek 路径保持一致：系统提示词、max_tokens、temperature 都取自配置，
-/// 不再硬编码 —— 否则用户在「配置」里改的人设对本地模型完全不起作用。
+/// 调用本地 Ollama 服务的 /api/chat 端点。提示词、回退与安全门在 ai.rs。
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::comment_fetcher::Comment;
+use crate::ai::{ChatOptions, ChatResult, TokenUsage};
 use crate::config::OllamaConfig;
-use crate::deepseek::build_messages;
+use crate::prompt::ChatMessage;
 use crate::rate_limiter::{self, RetryPolicy};
 
 #[derive(Debug, Serialize)]
 struct OllamaRequest {
     model: String,
-    messages: Vec<OllamaMessage>,
+    messages: Vec<ChatMessage>,
     stream: bool,
     options: OllamaOptions,
-}
-
-#[derive(Debug, Serialize)]
-struct OllamaMessage {
-    role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct OllamaOptions {
     num_predict: u32,
     temperature: f64,
+    num_ctx: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
+    #[serde(default)]
     message: OllamaRespMessage,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    prompt_eval_count: u64,
+    #[serde(default)]
+    eval_count: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct OllamaRespMessage {
+    #[serde(default)]
     content: String,
 }
 
@@ -77,51 +79,37 @@ pub async fn list_models(base_url: &str) -> Result<Vec<String>> {
     Ok(models)
 }
 
-/// 使用 Ollama 生成回复
-///
-/// `system_prompt` 为空时由 [`build_messages`] 回落到缺省提示词。
-#[allow(clippy::too_many_arguments)]
-pub async fn generate_reply(
+/// 调用 Ollama 的 /api/chat
+pub async fn chat(
     client: &reqwest::Client,
     ollama_config: &OllamaConfig,
-    comment_text: &str,
-    context: &[Comment],
-    video_title: Option<&str>,
-    video_desc: Option<&str>,
-    system_prompt: &str,
+    messages: &[ChatMessage],
+    options: ChatOptions,
     policy: RetryPolicy,
-) -> Result<String> {
-    let messages: Vec<OllamaMessage> = build_messages(
-        system_prompt,
-        comment_text,
-        context,
-        video_title,
-        video_desc,
-    )
-    .into_iter()
-    .map(|(role, content)| OllamaMessage { role, content })
-    .collect();
-
+) -> Result<ChatResult> {
     let request_body = OllamaRequest {
         model: ollama_config.model.clone(),
-        messages,
+        messages: messages.to_vec(),
         stream: false,
         options: OllamaOptions {
-            num_predict: ollama_config.max_tokens,
-            temperature: ollama_config.temperature,
+            num_predict: options.max_tokens,
+            temperature: options.temperature,
+            num_ctx: ollama_config.num_ctx.max(512),
         },
+        format: options.json_mode.then(|| "json".to_string()),
     };
 
     log::debug!(
-        "Ollama 请求: model={} timeout={}s num_predict={} temp={}",
+        "Ollama 请求: model={} timeout={}s num_predict={} temp={} json={}",
         ollama_config.model,
-        ollama_config.timeout_secs,
-        ollama_config.max_tokens,
-        ollama_config.temperature
+        options.timeout_secs,
+        options.max_tokens,
+        options.temperature,
+        options.json_mode
     );
 
     let url = format!("{}/api/chat", ollama_config.base_url.trim_end_matches('/'));
-    let timeout = std::time::Duration::from_secs(ollama_config.timeout_secs.max(1));
+    let timeout = std::time::Duration::from_secs(options.timeout_secs.max(1));
 
     let text = policy
         .run("Ollama 生成回复", || async {
@@ -162,10 +150,21 @@ pub async fn generate_reply(
         .await
         .context("Ollama API 请求失败")?;
 
-    let result: OllamaResponse =
-        serde_json::from_str(&text).context("Ollama API 响应解析失败")?;
+    let result: OllamaResponse = serde_json::from_str(&text).context("Ollama API 响应解析失败")?;
 
-    Ok(result.message.content.trim().to_string())
+    let content = result.message.content.trim().to_string();
+    if content.is_empty() {
+        return Err(anyhow::anyhow!("Ollama 返回空回复"));
+    }
+
+    Ok(ChatResult {
+        text: content,
+        usage: TokenUsage {
+            prompt_tokens: result.prompt_eval_count,
+            completion_tokens: result.eval_count,
+        },
+        model: result.model.unwrap_or_else(|| ollama_config.model.clone()),
+    })
 }
 
 #[cfg(test)]
@@ -180,40 +179,48 @@ mod tests {
             system_prompt: String::new(),
             max_tokens: 300,
             temperature: 0.5,
+            num_ctx: 8192,
         }
     }
 
-    /// 请求体必须使用配置里的数值，而不是硬编码的 200 / 0.7
+    /// 请求体必须使用传入的运行时参数，而不是硬编码的 200 / 0.7
     #[test]
-    fn test_request_body_uses_config_values() {
+    fn test_request_body_uses_runtime_options() {
         let c = cfg();
-        let messages: Vec<OllamaMessage> =
-            build_messages("自定义人设", "你好", &[], None, None)
-                .into_iter()
-                .map(|(role, content)| OllamaMessage { role, content })
-                .collect();
         let body = OllamaRequest {
             model: c.model.clone(),
-            messages,
+            messages: vec![ChatMessage::user("你好")],
             stream: false,
             options: OllamaOptions {
-                num_predict: c.max_tokens,
-                temperature: c.temperature,
+                num_predict: 300,
+                temperature: 0.5,
+                num_ctx: 8192,
             },
+            format: None,
         };
         assert_eq!(body.model, "qwen2.5:7b");
         assert_eq!(body.options.num_predict, 300);
+        assert_eq!(body.options.num_ctx, 8192);
         assert!((body.options.temperature - 0.5).abs() < f64::EPSILON);
-        assert_eq!(body.messages[0].content, "自定义人设");
+        assert_eq!(body.messages[0].content, "你好");
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(!json.contains("format"), "普通回复不应带 format");
     }
 
     #[test]
-    fn test_default_ollama_config_values() {
-        let d = OllamaConfig::default();
-        assert_eq!(d.base_url, "http://127.0.0.1:11434");
-        assert_eq!(d.model, "qwen2.5:7b");
-        assert_eq!(d.max_tokens, 200);
-        assert!((d.temperature - 0.7).abs() < f64::EPSILON);
-        assert!(d.system_prompt.is_empty(), "默认留空以沿用 deepseek 的人设");
+    fn test_json_mode_sets_format() {
+        let body = OllamaRequest {
+            model: "qwen2.5:7b".into(),
+            messages: vec![],
+            stream: false,
+            options: OllamaOptions {
+                num_predict: 100,
+                temperature: 0.3,
+                num_ctx: 4096,
+            },
+            format: Some("json".into()),
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains(r#""format":"json""#));
     }
 }

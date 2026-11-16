@@ -10,7 +10,11 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 
 - 🖥️ **原生 Windows GUI**：Rust + Tauri 1.x + Svelte 构建，轻量 < 8MB 安装包
 - 🤖 自动监控 B 站视频的新增评论
-- 🧠 **双 AI 引擎**：DeepSeek API + **Ollama 本地模型**，可自由切换
+- 🧠 **多 AI 引擎**：DeepSeek API + **Ollama 本地模型** + **OpenAI 兼容端点**（OpenAI / OpenRouter / SiliconFlow / LM Studio / vLLM 等），可自由切换
+- 🔌 **provider 回退**：主引擎重试后仍失败时自动切到备用引擎，并提供「保存并测试连接」与模型列表拉取
+- 🛡️ **AI 安全门**：结构化 JSON 决策（回复 / 跳过 + 风险 + 置信度），广告、引战、敏感、无意义评论直接跳过；评论用边界标记隔离，防提示注入
+- 🧵 **上下文升级**：楼中楼按「根评论 → 父评论」组织，历史回复作为风格示例，近期回复做相似度去重
+- 📊 **AI 用量与预算**：解析 token 用量、按配置单价估算费用；日预算用尽时告警并暂停 AI 调用
 - 📝 **链式回复支持（楼中楼）**：递归获取并回复多层级子评论
 - 🔑 **扫码登录**：B 站 APP 扫码获取 Cookie，支持手动输入 + 自动刷新
 - 👍 回复后自动点赞评论 / 点赞用户最新视频（可选）
@@ -28,6 +32,7 @@ B站评论自动回复机器人 **Rust + Tauri 桌面版**（Windows GUI）
 - 📁 **数据统一存放**：配置、历史、Cookie、缓存、日志都在 `%APPDATA%\BiliCommentBot-RS`，升级/重装不丢；旧版本遗留在程序目录的数据会在首次启动时自动迁移
 - 📝 **日志落盘**：按 `[logging]` 写入 `logs/bot.log`，超过 5MB 自动轮转（正式版没有控制台窗口，日志文件是唯一的排查手段）
 - 🔂 **请求重试**：所有 B站 请求与 AI 调用按 `[rate_limit]` 的 `max_retries` / `retry_delay` 做指数退避重试，并遵守 `Retry-After`
+- 📉 **成本可控**：`[ai] daily_token_budget` 超限后当天不再调用 AI，仪表盘显示今日调用量、token、跳过数与估算费用
 - 🔒 **单实例保护**：重复启动会提示并退出，避免两个实例抢同一份历史库而重复回复
 - 🔑 **安全的凭证写入**：手动填写的 Cookie 会**先校验再保存**，校验失败时完整保留原有登录
 - 🗑️ **一键清空**：只清理数据目录内已知的运行时文件（会先把清单展示给你），需输入确认文字
@@ -147,8 +152,11 @@ BiliCommentBot-RS/
 │   │   ├── rate_limiter.rs # 频率控制 + 重试策略（RetryPolicy）
 │   │   ├── video_fetcher.rs # 视频列表获取
 │   │   ├── comment_fetcher.rs # 评论+楼中楼获取
+│   │   ├── ai.rs           # 统一 AI 调度 / 回退 / 安全门 / 用量
+│   │   ├── prompt.rs       # 提示词构建 / 注入防护 / 相似度
 │   │   ├── deepseek.rs     # DeepSeek API
 │   │   ├── ollama.rs       # Ollama 本地模型
+│   │   ├── openai.rs       # OpenAI 兼容端点
 │   │   ├── reply.rs        # 回复/点赞/粉丝检查
 │   │   └── history.rs      # 历史记录管理（SQLite）
 │   ├── config.example.toml # 配置字段参考（可提交，不含凭证）
@@ -194,6 +202,18 @@ model = "qwen2.5:7b"
 system_prompt = ""     # 留空则沿用 [deepseek].system_prompt
 max_tokens = 200
 temperature = 0.7
+num_ctx = 8192         # Ollama 上下文窗口（提示词较长时调大）
+
+[openai]
+base_url = "https://api.openai.com/v1"  # 需带版本前缀
+api_key = ""                            # 本地服务可留空
+model = ""                              # 留空视为未配置
+max_tokens = 800
+temperature = 0.7
+system_prompt = ""                      # 留空则沿用 [deepseek].system_prompt
+json_mode = true                        # 端点不支持 response_format 时改为 false
+token_param = "max_tokens"              # 或 max_completion_tokens（o 系列）
+reasoning_effort = ""                   # low / medium / high，留空不发送
 
 [reply]
 enabled = true         # 自动回复总开关（关闭后只抓取不回复）
@@ -202,6 +222,15 @@ max_process = 10       # 每轮最多回复多少条（跨所有视频累计）
 reply_delay = 2        # 回复成功后的间隔（秒）
 chained_reply_enabled = true
 max_reply_depth = 3    # 楼中楼递归层级（与 Python 版语义一致）
+context_comments_count = 0  # 同视频其他评论条数（0=不附带）
+thread_context_max = 6      # 楼中楼向上追溯的父评论层数（0=不附带）
+style_examples_count = 2    # 历史回复风格示例条数（0=关闭）
+dedupe_threshold = 0.82     # 与近期回复的相似度阈值（0=关闭去重）
+
+# AI 安全门（[reply.ai_guard]）：要求模型输出结构化 JSON 决策
+# enabled / skip_spam / skip_toxic / skip_sensitive / skip_meaningless
+# min_confidence / review_low_confidence / store_skips
+# 默认开启；跳过的评论会记录原因，下一轮不再调用 AI
 
 # 关键词过滤（[reply.keyword_filter]）
 # 启用后，评论内容命中黑名单则跳过；白名单非空时需匹配白名单才回复
@@ -214,7 +243,12 @@ max_reply_depth = 3    # 楼中楼递归层级（与 Python 版语义一致）
 # whitelist / blacklist 为逗号分隔的 UID 列表
 
 [ai]
-provider = "deepseek"  # "deepseek" 或 "ollama"
+provider = "deepseek"  # "deepseek" / "ollama" / "openai"
+fallback = "none"      # 主 provider 失败后回退：none / deepseek / ollama / openai
+request_timeout_secs = 45  # DeepSeek / OpenAI 兼容请求超时；Ollama 用自身 timeout_secs
+daily_token_budget = 0     # 每日 token 预算（0=不限制）
+input_price_per_million = 0.0   # 元 / 百万 token，用于估算费用
+output_price_per_million = 0.0
 
 [logging]
 level = "INFO"         # ERROR / WARN / INFO / DEBUG / TRACE
@@ -229,7 +263,7 @@ close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最�
 
 > **提示**：`[cache]` 段（HTTP 响应缓存）在 Rust 版中**未实现**，仅为兼容旧配置保留解析，
 > 界面也不再展示；`reply.only_new` 同样不产生行为（去重始终生效）。手改配置时写入的
-> 未知字段不会在保存时保留。
+> 未知字段会被原样保留（`RawConfig` 的 `extra` 兜底）。
 
 ---
 
@@ -249,7 +283,7 @@ close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最�
 %APPDATA%\BiliCommentBot-RS\
 ├── config.toml            # 配置（含 Cookie 与 API Key）
 ├── bilibili_cookie.json   # 登录凭证
-├── history.db             # 回复历史 / 去重依据（SQLite）
+├── history.db             # 回复历史 / 去重依据 / AI 用量 / 跳过记录（SQLite）
 ├── video_cache.json       # 视频列表缓存
 ├── app.lock               # 单实例锁
 └── logs\bot.log           # 日志（轮转文件为 bot.log.1）
@@ -278,13 +312,43 @@ close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最�
 
 ## AI 提供商
 
-| 特性 | DeepSeek | Ollama |
-|------|----------|--------|
-| 部署方式 | 云端 API | 本地运行 |
-| 隐私性 | 评论发送到云端 | 完全本地 |
-| 速度 | 取决于网络 | 取决于硬件 |
-| 费用 | API 调用计费 | 免费 |
-| 切换方式 | 配置 `[ai] provider` 字段 | — |
+| 特性 | DeepSeek | Ollama | OpenAI 兼容端点 |
+|------|----------|--------|-----------------|
+| 部署方式 | 云端 API | 本地运行 | 云端或本地 |
+| 隐私性 | 评论发送到云端 | 完全本地 | 取决于端点 |
+| 速度 | 取决于网络 | 取决于硬件 | 取决于端点 |
+| 费用 | API 调用计费 | 免费 | 取决于端点 |
+| 接入方式 | 官方 `/chat/completions` | 原生 `/api/chat` | 标准 `/chat/completions` |
+| 切换方式 | `[ai] provider = "deepseek"` | `"ollama"` | `"openai"` |
+
+### OpenAI 兼容端点
+
+「配置 → OpenAI兼容」支持任何实现标准 `/chat/completions` 与 `/models` 的服务：
+
+- 云端网关：OpenAI、OpenRouter、SiliconFlow、Moonshot、智谱等；
+- 本地服务：LM Studio、vLLM、llama.cpp server 等（API Key 可留空）。
+
+`base_url` 需要包含版本前缀，例如 `https://api.openai.com/v1`、
+`http://127.0.0.1:1234/v1`。页面上的「获取模型列表」会请求 `{base_url}/models`，
+点击模型名即可填入。
+
+部分推理模型要求 `max_completion_tokens` 而不是 `max_tokens`，可在
+「Token 上限字段」中切换；`reasoning_effort` 可填 `low` / `medium` / `high`，
+留空则不发送。设置推理强度后会省略 `temperature`，以兼容不接受自定义温度的推理模型。
+
+### 回退、安全门与用量
+
+- **自动回退**：主 provider 按 `[rate_limit]` 重试后仍失败时，会按
+  `[ai] fallback` 尝试备用 provider 一次；日志与界面会标明本次是否走了回退。
+- **AI 安全门**（默认开启）：每次生成要求模型返回
+  `{action, reason, risk, confidence, reply}`。广告/引流、辱骂/引战、敏感话题、
+  无意义灌水会被跳过；低于 `min_confidence` 的判断不生效，并可按配置追加一次复核。
+  被跳过的评论会写入 `ignored_comments` 表，在「回复记录 → AI 跳过记录」中可见，
+  下一轮不会重复调用 AI。评论内容会用 `<comment>` 边界包裹并清洗标签，
+  系统提示词明确声明其为不可信数据，以降低提示注入风险。
+- **用量与预算**：输入/输出 token 会落库到 `ai_usage_daily` 表，仪表盘显示今日调用量、
+  token、跳过数、失败数与估算费用（需在「配置 → AI」填写单价）。
+  `daily_token_budget` 超限后当天不再调用 AI，并推送一次提醒横幅。
 
 ### DeepSeek 模型与思考模式
 
@@ -310,12 +374,20 @@ close_action = "ask"   # 关闭主窗口时：ask（每次询问）/ tray（最�
 | 包体大小 | ~50MB (Docker) | **< 8MB** (.msi) |
 | 内存占用 | ~50-100MB | **~25-40MB** |
 | 启动速度 | 2-5s | < 1s |
-| 新增功能 | — | 新手教程向导、Ollama 支持、双 AI 引擎 |
+| 新增功能 | — | 新手教程向导、Ollama 支持、OpenAI 兼容端点、AI 安全门、用量预算 |
 
 ---
 
 ## 更新记录
 
+- **AI 能力升级（2026-11）**
+  - 新增 **OpenAI 兼容 provider**：可接 OpenAI、OpenRouter、SiliconFlow、LM Studio、vLLM 等标准端点；支持 `max_tokens` / `max_completion_tokens` 切换与 `reasoning_effort`，不绑定具体厂商或模型名。
+  - 新增 **自动回退**：主 provider 重试后仍失败时按 `[ai] fallback` 切换备用引擎；新增「保存并测试连接」与「获取模型列表」。
+  - 新增 **AI 安全门**：单次结构化 JSON 决策（action / risk / confidence / reply），广告、引战、敏感、无意义评论直接跳过；低置信度可按配置复核一次；跳过记录落库并在「回复记录 → AI 跳过记录」中展示，避免每轮重复调用 AI。
+  - 新增 **提示注入防护**：视频标题、简介、评论、历史回复都用 `<video>` / `<thread>` / `<comment>` 等边界包裹并清洗标签，系统提示词明确声明这些是不可信数据；评论正文截断到 2000 字符。
+  - 新增 **上下文质量**：楼中楼按根评论到父评论的链路组织；从历史回复取少量风格示例；新回复与近期回复相似度超过阈值时重写一次。
+  - 新增 **AI 用量与预算**：解析 DeepSeek / OpenAI / Ollama 的 token 用量并落库，仪表盘显示今日调用量、token、跳过数、失败数与估算费用；`[ai] daily_token_budget` 超限后当天暂停 AI 并推送提醒。
+  - 配置向后兼容：旧 `config.toml` 无需修改即可启动；新字段都有默认值，缺失时按默认值解析。
 - **新增异常提醒横幅**：B站登录失效、Cookie 缺少 `bili_jct`、连续请求失败（默认 5 次）等问题会通过新的 `alert` 事件推到界面常驻横幅，同时写入日志。此前这些情况只体现为日志里的一行 ERROR，机器人静默失败一整晚也不会有人发现。
 - **托盘菜单可直接控制机器人**：新增「启动机器人 / 停止机器人 / 立即检查」，配合开机自启静默进托盘的场景，不必再打开窗口点按钮。
 - **收窄前端权限**：`tauri.conf.json` 的 allowlist 去掉了未使用的 `fs`（此前是 `**` 全盘读写）、`path`、`process`（可重启/退出进程）、`clipboard`、`protocol`；`dialog` 由 `all` 收窄为 `open`，并同步精简 `Cargo.toml` 里的 tauri features。前端只用到 `invoke` / `event` / `dialog.open`，其余都属于多余的攻击面。
